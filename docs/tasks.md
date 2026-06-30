@@ -8,7 +8,7 @@
 
 | Phase | 名称 | 状态 | 进度 |
 |-------|------|------|------|
-| Phase 0 | 项目骨架与基础设施 | ⬜ 未开始 | 0/5 |
+| Phase 0 | 项目骨架与基础设施 | ✅ 已完成 | 5/5 |
 | Phase 1 | Wiki 核心存储 | ⬜ 未开始 | 0/4 |
 | Phase 2 | LLM 集成与摄入 | ⬜ 未开始 | 0/4 |
 | Phase 3 | 查询与检索 | ⬜ 未开始 | 0/3 |
@@ -24,11 +24,11 @@
 
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
-| 0.1 | Go 项目初始化：go mod, 目录结构, Makefile | ⬜ | — | 见 [architecture.md](architecture.md) 目录结构 |
-| 0.2 | CLI 框架：cobra 子命令 (ingest/ask/find/lint/serve/config) | ⬜ | — | 命令注册 + 占位实现 |
-| 0.3 | 配置系统：YAML 配置文件，LLM provider/Wiki 路径等 | ⬜ | — | 默认配置 + 配置文件查找 |
-| 0.4 | Git 工具封装：init/add/commit/log | ⬜ | — | 基于 go-git 或 os/exec |
-| 0.5 | 前端项目初始化：Vite + React + TypeScript 脚手架 | ⬜ | — | 基础路由 + API 客户端骨架 |
+| 0.1 | Go 项目初始化：go mod, 目录结构, Makefile | ✅ | — | 见 [architecture.md](architecture.md) 目录结构 |
+| 0.2 | CLI 框架：cobra 子命令 (ingest/ask/find/lint/serve/config) | ✅ | — | 命令注册 + 占位实现 |
+| 0.3 | 配置系统：YAML 配置文件，LLM provider/Wiki 路径等 | ✅ | — | 默认配置 + 配置文件查找 |
+| 0.4 | Git 工具封装：init/add/commit/log | ✅ | — | 基于 os/exec |
+| 0.5 | 前端项目初始化：Vite + React + TypeScript 脚手架 | ✅ | — | 基础路由 + API 客户端骨架 |
 
 **可交付**：
 - `make build` 产出 `ruminate` 二进制
@@ -160,3 +160,4 @@
 | 日期 | 变更 |
 |------|------|
 | 2026-06-30 | 初始任务拆分，6 个 Phase 共 27 个子任务 |
+| 2026-06-30 | Phase 0 完成：项目骨架、CLI、配置、Git 封装、前端脚手架 |

@@ -1,0 +1,38 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+var rootCmd = &cobra.Command{
+	Use:   "ruminate",
+	Short: "Ruminate - AI-driven personal knowledge base",
+	Long: `Ruminate is an AI-driven personal knowledge base system.
+It incrementally builds and maintains a persistent, interlinked Markdown wiki —
+curated by you, written and maintained entirely by LLMs.`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+}
+
+// Execute runs the root command.
+func Execute() error {
+	return rootCmd.Execute()
+}
+
+func init() {
+	rootCmd.AddCommand(ingestCmd)
+	rootCmd.AddCommand(askCmd)
+	rootCmd.AddCommand(findCmd)
+	rootCmd.AddCommand(lintCmd)
+	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(configCmd)
+}
+
+// exitWithError prints an error message and exits with code 1.
+func exitWithError(err error) {
+	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	os.Exit(1)
+}
