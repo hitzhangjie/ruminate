@@ -1,6 +1,6 @@
 # 任务进度追踪
 
-> 最后更新：2026-06-30
+> 最后更新：2026-07-01
 
 ---
 
@@ -9,7 +9,7 @@
 | Phase | 名称 | 状态 | 进度 |
 |-------|------|------|------|
 | Phase 0 | 项目骨架与基础设施 | ✅ 已完成 | 5/5 |
-| Phase 1 | Wiki 核心存储 | ⬜ 未开始 | 0/4 |
+| Phase 1 | Wiki 核心存储 | ✅ 已完成 | 4/4 |
 | Phase 2 | LLM 集成与摄入 | ⬜ 未开始 | 0/4 |
 | Phase 3 | 查询与检索 | ⬜ 未开始 | 0/3 |
 | Phase 4 | 巡检与 Web 服务 | ⬜ 未开始 | 0/3 |
@@ -43,10 +43,10 @@
 
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
-| 1.1 | Wiki 目录结构定义与初始化 | ⬜ | — | raw/ wiki/ index.md log.md schema.md |
-| 1.2 | Index 管理器：index.md 读写更新 + SQLite FTS5 | ⬜ | — | 使用 [go-sqlite3](https://github.com/mattn/go-sqlite3) |
-| 1.3 | Wiki 页面 CRUD：创建/读取/更新/删除 Markdown 页面 | ⬜ | — | 支持 WikiLink `[[page]]` 解析 |
-| 1.4 | 日志系统：log.md 结构化追加写入 | ⬜ | — | 统一格式：`## [日期] 操作类型 | 标题` |
+| 1.1 | Wiki 目录结构定义与初始化 | ✅ | — | raw/ wiki/ index.md log.md schema.md |
+| 1.2 | Index 管理器：index.md 读写更新 + SQLite FTS5 | ✅ | — | 使用 modernc.org/sqlite (纯 Go，含 FTS5) |
+| 1.3 | Wiki 页面 CRUD：创建/读取/更新/删除 Markdown 页面 | ✅ | — | 支持 WikiLink [[page]] 解析 |
+| 1.4 | 日志系统：log.md 结构化追加写入 | ✅ | — | 统一格式：## [日期] 操作类型 | 标题 |
 
 **可交付**：
 - `ruminate init` 初始化 Wiki 目录

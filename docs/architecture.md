@@ -126,10 +126,8 @@ ruminate/
 
 ```
 <wiki_root>/                    # 默认为当前目录的 ruminate_wiki/
-├── raw/                        # 原始资料（只读，不可变）
-│   ├── articles/
-│   ├── papers/
-│   └── notes/
+├── raw/                        # 原始资料（按用户分类标签组织：article, paper, note, blog...）
+│   └── <source-type>/           # 按需创建，source-type 由用户自定义
 ├── wiki/                       # AI 生成的 Wiki 页面
 │   ├── summaries/              # 摘要页
 │   ├── entities/               # 实体页（人物、事件、术语...）
