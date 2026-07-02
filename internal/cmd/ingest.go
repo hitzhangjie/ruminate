@@ -88,5 +88,4 @@ Requires an initialized wiki (run "ruminate init" first).`,
 
 func init() {
 	ingestCmd.Flags().StringP("type", "t", "note", "Source type: article, paper, note, book")
-	rootCmd.AddCommand(ingestCmd)
 }
