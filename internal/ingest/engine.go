@@ -167,9 +167,17 @@ func (e *Engine) Ingest(ctx context.Context, sourcePath, sourceType string) erro
 
 // analyze sends the source content to the LLM and parses the structured response.
 func (e *Engine) analyze(ctx context.Context, src *Source) (*AnalysisResult, error) {
+	// Validate content size against model's max input tokens.
+	// The system prompt also counts toward the input, so we deduct its estimated tokens.
+	sysPromptTokens := estimateTokens(ingestSystemPrompt)
+	effectiveMaxTokens := e.llmCfg.MaxInputTokens - sysPromptTokens
+	if err := validateContentSize(src.Content, effectiveMaxTokens); err != nil {
+		return nil, err
+	}
+
 	messages := []llm.Message{
 		{Role: "system", Content: ingestSystemPrompt},
-		{Role: "user", Content: truncateContent(src.Content)},
+		{Role: "user", Content: src.Content},
 	}
 
 	resp, err := e.llm.Chat(ctx, messages, &llm.ChatOptions{
@@ -392,15 +400,39 @@ func filepathToLink(rawPath string) string {
 	return "../../" + rawPath
 }
 
-// truncateContent limits content size to avoid exceeding model context windows.
+// estimateTokens provides a rough estimate of token count from a string.
 //
-// TODO 这里的窗口太小了，现在deepseek已经增加到1M上下文窗口了，很多模型都已经朝这个趋势去走了。
-func truncateContent(content string) string {
-	const maxChars = 16000 // ~4000 tokens for most models
-	if len(content) <= maxChars {
-		return content
+// The heuristic is ~4 characters per token for English text. For mixed-language
+// content (e.g., Chinese + English), the actual ratio is closer to 2-3 chars/token.
+// We use a conservative 4 chars/token to err on the side of allowing more content
+// rather than rejecting valid input. This is only a pre-flight check — the actual
+// token count depends on the model's tokenizer.
+func estimateTokens(content string) int {
+	if len(content) == 0 {
+		return 0
 	}
-	return content[:maxChars] + "\n\n[... content truncated ...]"
+	return len(content) / 4
+}
+
+// validateContentSize checks whether the estimated token count of content exceeds
+// maxInputTokens. If it does, it returns a descriptive error so the user knows
+// the content is too large and can decide to trim it or increase the limit.
+//
+// Unlike the old truncateContent, this does NOT silently truncate — silently
+// dropping information risks degrading analysis quality in ways the user can't see.
+func validateContentSize(content string, maxInputTokens int) error {
+	if maxInputTokens <= 0 {
+		return nil // no limit configured
+	}
+	est := estimateTokens(content)
+	if est > maxInputTokens {
+		return fmt.Errorf(
+			"content too large: estimated %d tokens exceeds max input limit of %d tokens (%.1f KB text). "+
+				"Either trim the source material or increase max_input_tokens in your config for the current model",
+			est, maxInputTokens, float64(len(content))/1024,
+		)
+	}
+	return nil
 }
 
 // ingestSystemPrompt instructs the LLM how to analyze source material.

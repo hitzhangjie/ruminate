@@ -200,18 +200,39 @@ func TestMergeEntityContent_Duplicate(t *testing.T) {
 	}
 }
 
-func TestTruncateContent(t *testing.T) {
-	short := "short content"
-	if got := truncateContent(short); got != short {
-		t.Error("short content should not be truncated")
+func TestEstimateTokens(t *testing.T) {
+	if got := estimateTokens(""); got != 0 {
+		t.Errorf("empty string should be 0 tokens, got %d", got)
 	}
 
-	long := strings.Repeat("x", 20000)
-	truncated := truncateContent(long)
-	if len(truncated) >= 20000 {
-		t.Error("long content should be truncated")
+	// 400 chars → ~100 tokens
+	if got := estimateTokens(strings.Repeat("x", 400)); got != 100 {
+		t.Errorf("400 chars should be ~100 tokens, got %d", got)
 	}
-	if !strings.Contains(truncated, "truncated") {
-		t.Error("truncated content should have a note")
-	}
+}
+
+func TestValidateContentSize(t *testing.T) {
+	t.Run("within limit", func(t *testing.T) {
+		content := strings.Repeat("x", 400) // ~100 tokens
+		err := validateContentSize(content, 200)
+		if err != nil {
+			t.Errorf("content within limit should pass, got: %v", err)
+		}
+	})
+
+	t.Run("exceeds limit", func(t *testing.T) {
+		content := strings.Repeat("x", 4000) // ~1000 tokens
+		err := validateContentSize(content, 200)
+		if err == nil {
+			t.Fatal("content exceeding limit should return error")
+		}
+	})
+
+	t.Run("no limit configured", func(t *testing.T) {
+		content := strings.Repeat("x", 100000)
+		err := validateContentSize(content, 0)
+		if err != nil {
+			t.Errorf("zero limit should disable validation, got: %v", err)
+		}
+	})
 }

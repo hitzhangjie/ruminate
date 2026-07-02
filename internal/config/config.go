@@ -36,6 +36,16 @@ type LLMConfig struct {
 
 	// Temperature controls randomness (0-1).
 	Temperature float64 `yaml:"temperature" mapstructure:"temperature"`
+
+	// MaxInputTokens is the maximum number of tokens the model can accept as input.
+	// Content exceeding this limit will be rejected with an error rather than
+	// silently truncated. Different models have different context windows:
+	// llama3.2 (~128K), DeepSeek (~1M), GPT-4o (~128K), etc.
+	// Set this based on your model's context window, leaving room for the system
+	// prompt and response. 0 means no limit (not recommended).
+	//
+	// TODO: 这里最好能够根据模型信息自动进行调整，而不是完全依赖这里的配置，这里的配置应该是一个默认的最大输入token
+	MaxInputTokens int `yaml:"max_input_tokens" mapstructure:"max_input_tokens"`
 }
 
 // EmbeddingConfig holds configuration for the embedding provider.
@@ -64,10 +74,11 @@ func DefaultConfig() *Config {
 	return &Config{
 		WikiPath: "ruminate_wiki",
 		LLM: LLMConfig{
-			Provider:    "ollama",
-			BaseURL:     "http://localhost:11434",
-			Model:       "llama3.2",
-			Temperature: 0.3,
+			Provider:       "ollama",
+			BaseURL:        "http://localhost:11434",
+			Model:          "gpt-oss:20b",
+			Temperature:    0.3,
+			MaxInputTokens: 128 << 10,
 		},
 		Embedding: EmbeddingConfig{
 			Provider: "ollama",
@@ -100,9 +111,9 @@ func Load() (*Config, error) {
 	// Config file search
 	v.SetConfigName(".ruminate")
 	v.SetConfigType("yaml")
-	v.AddConfigPath(".")                          // current directory
-	v.AddConfigPath("$HOME/.config/ruminate")     // user config dir
-	v.AddConfigPath("$HOME")                      // home directory fallback
+	v.AddConfigPath(".")                      // current directory
+	v.AddConfigPath("$HOME/.config/ruminate") // user config dir
+	v.AddConfigPath("$HOME")                  // home directory fallback
 
 	// Environment variables
 	v.SetEnvPrefix("RUMINATE")
