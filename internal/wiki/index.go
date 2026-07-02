@@ -122,6 +122,24 @@ func (im *IndexManager) AddPage(page *Page) error {
 	return im.updateIndexMd(page, "add")
 }
 
+// AddRawSource indexes a raw source file in FTS5 only (not in index.md).
+// Raw sources are searchable via FTS5 but don't appear in the human-readable index.
+func (im *IndexManager) AddRawSource(path, title, content string) error {
+	if err := im.open(); err != nil {
+		return err
+	}
+
+	_, err := im.db.Exec(
+		"INSERT INTO pages_fts (path, title, page_type, content) VALUES (?, ?, ?, ?)",
+		path, title, "raw", content,
+	)
+	if err != nil {
+		return fmt.Errorf("inserting raw source into FTS: %w", err)
+	}
+
+	return nil
+}
+
 // UpdatePage updates a page in both index.md and the FTS5 index.
 func (im *IndexManager) UpdatePage(page *Page) error {
 	if err := im.open(); err != nil {

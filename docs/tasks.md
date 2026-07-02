@@ -1,6 +1,6 @@
 # 任务进度追踪
 
-> 最后更新：2026-07-01
+> 最后更新：2026-07-02
 
 ---
 
@@ -10,7 +10,7 @@
 |-------|------|------|------|
 | Phase 0 | 项目骨架与基础设施 | ✅ 已完成 | 5/5 |
 | Phase 1 | Wiki 核心存储 | ✅ 已完成 | 4/4 |
-| Phase 2 | LLM 集成与摄入 | ⬜ 未开始 | 0/4 |
+| Phase 2 | LLM 集成与摄入 | ✅ 已完成 | 4/4 |
 | Phase 3 | 查询与检索 | ⬜ 未开始 | 0/3 |
 | Phase 4 | 巡检与 Web 服务 | ⬜ 未开始 | 0/3 |
 | Phase 5 | Web 前端 | ⬜ 未开始 | 0/4 |
@@ -62,10 +62,10 @@
 
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
-| 2.1 | LLM Provider 抽象：推理接口定义 + Ollama 实现 | ⬜ | — | Chat/ChatStream |
-| 2.2 | Embedding Provider 抽象：嵌入接口定义 + Ollama 实现 | ⬜ | — | 暂用于 P1 语义搜索，先定义接口 |
-| 2.3 | Ingest 引擎：读取源 → LLM 分析 → 创建/更新页面 → 更新索引 → Git commit | ⬜ | — | 核心业务流程 |
-| 2.4 | CLI 集成：`ruminate ingest <file/url>` 端到端可工作 | ⬜ | — | 支持 .md/.txt/URL |
+| 2.1 | LLM Provider 抽象：推理接口定义 + Ollama 实现 | ✅ | — | Chat/ChatStream |
+| 2.2 | Embedding Provider 抽象：嵌入接口定义 + Ollama 实现 | ✅ | — | 暂用于 P1 语义搜索，先定义接口 |
+| 2.3 | Ingest 引擎：读取源 → LLM 分析 → 创建/更新页面 → 更新索引 → Git commit | ✅ | — | 核心业务流程 |
+| 2.4 | CLI 集成：`ruminate ingest <file/url>` 端到端可工作 | ✅ | — | 支持 .md/.txt/URL |
 
 **可交付**：
 - `ruminate ingest article.md` 完成一次完整的知识摄入
@@ -161,3 +161,5 @@
 |------|------|
 | 2026-06-30 | 初始任务拆分，6 个 Phase 共 27 个子任务 |
 | 2026-06-30 | Phase 0 完成：项目骨架、CLI、配置、Git 封装、前端脚手架 |
+| 2026-07-01 | Phase 1 完成：Wiki 核心存储 (CRUD, Index, WikiLink, Log, Init) |
+| 2026-07-02 | Phase 2 完成：LLM 集成与摄入 (Provider, Embedder, Ingest Engine, CLI) |

@@ -84,7 +84,7 @@ func TestManager_AddSource(t *testing.T) {
 	content := []byte("# My Article\n\nThis is a test article.")
 
 	// Add a source with type "article"
-	err := mgr.AddSource("article", "My Article", content)
+	_, err := mgr.AddSource("article", "My Article", content)
 	if err != nil {
 		t.Fatalf("AddSource(article) error: %v", err)
 	}
@@ -104,22 +104,22 @@ func TestManager_AddSource(t *testing.T) {
 		t.Errorf("content mismatch: got %q, want %q", string(readContent), string(content))
 	}
 
-	// Add another source with a different type "blog"
-	blogContent := []byte("# My Blog\n\nBlog content.")
-	err = mgr.AddSource("blog", "My Blog", blogContent)
+	// Add another source with a different type "paper"
+	paperContent := []byte("# My Paper\n\nPaper content.")
+	_, err = mgr.AddSource("paper", "My Paper", paperContent)
 	if err != nil {
-		t.Fatalf("AddSource(blog) error: %v", err)
+		t.Fatalf("AddSource(paper) error: %v", err)
 	}
 
-	// Verify blog directory was created on-demand
-	blogPath := filepath.Join(dir, "raw", "blog", "My Blog.md")
-	if _, err := os.Stat(blogPath); os.IsNotExist(err) {
-		t.Errorf("blog source file should exist: %s", blogPath)
+	// Verify paper directory was created on-demand
+	paperPath := filepath.Join(dir, "raw", "paper", "My Paper.md")
+	if _, err := os.Stat(paperPath); os.IsNotExist(err) {
+		t.Errorf("paper source file should exist: %s", paperPath)
 	}
 
 	// Add second article — same type, different title
 	article2Content := []byte("# Second Article\n\nMore content.")
-	err = mgr.AddSource("article", "Second Article", article2Content)
+	_, err = mgr.AddSource("article", "Second Article", article2Content)
 	if err != nil {
 		t.Fatalf("AddSource(article, second) error: %v", err)
 	}
@@ -140,12 +140,12 @@ func TestManager_AddSource_Validation(t *testing.T) {
 	defer mgr.Close()
 
 	// Empty sourceType should error
-	if err := mgr.AddSource("", "Title", []byte("content")); err == nil {
+	if _, err := mgr.AddSource("", "Title", []byte("content")); err == nil {
 		t.Error("AddSource with empty sourceType should error")
 	}
 
 	// Empty title should error
-	if err := mgr.AddSource("article", "", []byte("content")); err == nil {
+	if _, err := mgr.AddSource("article", "", []byte("content")); err == nil {
 		t.Error("AddSource with empty title should error")
 	}
 }
@@ -160,9 +160,9 @@ func TestManager_ListSources(t *testing.T) {
 	defer mgr.Close()
 
 	// Add sources of different types
-	mgr.AddSource("article", "Article One", []byte("# One"))
-	mgr.AddSource("article", "Article Two", []byte("# Two"))
-	mgr.AddSource("paper", "Paper One", []byte("# Paper"))
+	_, _ = mgr.AddSource("article", "Article One", []byte("# One"))
+	_, _ = mgr.AddSource("article", "Article Two", []byte("# Two"))
+	_, _ = mgr.AddSource("paper", "Paper One", []byte("# Paper"))
 
 	// List all
 	all, err := mgr.ListSources("")

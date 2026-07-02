@@ -127,31 +127,47 @@ func (m *Manager) IsInitialized() bool {
 	return err == nil
 }
 
-// AddSource saves raw source material to raw/<sourceType>/<filename>.md.
+// AddSource saves raw source material to raw/<sourceType>/<filename>.md
+// and indexes it in FTS5 for full-text search.
 // The raw/<sourceType>/ directory is created on-demand if it doesn't exist.
-// sourceType is a user-defined label: "article", "blog", "paper", "note", "idea", etc.
+// sourceType is a user-defined label: "article", "paper", "note", "book", etc.
 // title is used as the filename (sanitized).
-func (m *Manager) AddSource(sourceType string, title string, content []byte) error {
+//
+// Returns the relative path of the saved source file (from wiki root).
+func (m *Manager) AddSource(sourceType string, title string, content []byte) (string, error) {
 	if sourceType == "" {
-		return fmt.Errorf("sourceType is required")
+		return "", fmt.Errorf("sourceType is required")
 	}
 	if title == "" {
-		return fmt.Errorf("title is required")
+		return "", fmt.Errorf("title is required")
 	}
 
 	dir := filepath.Join(m.rawDir, sourceType)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("creating source directory %s: %w", dir, err)
+		return "", fmt.Errorf("creating source directory %s: %w", dir, err)
 	}
 
 	filename := sanitizeFilename(title) + ".md"
 	path := filepath.Join(dir, filename)
 
 	if err := os.WriteFile(path, content, 0644); err != nil {
-		return fmt.Errorf("writing source file: %w", err)
+		return "", fmt.Errorf("writing source file: %w", err)
 	}
 
-	return nil
+	// Index the raw source in FTS5 for full-text search.
+	relPath := filepath.ToSlash(filepath.Join("raw", sourceType, filename))
+	m.ensureComponents()
+	if err := m.index.AddRawSource(relPath, title, string(content)); err != nil {
+		return "", fmt.Errorf("indexing raw source: %w", err)
+	}
+
+	return relPath, nil
+}
+
+// RawSourcePath returns the relative path where a raw source would be stored,
+// without actually writing it. Useful for generating links before the file exists.
+func (m *Manager) RawSourcePath(sourceType, title string) string {
+	return filepath.ToSlash(filepath.Join("raw", sourceType, sanitizeFilename(title)+".md"))
 }
 
 // ListSources returns the relative paths of all raw source files,
