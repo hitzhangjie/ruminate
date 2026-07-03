@@ -1,11 +1,63 @@
 package wiki
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hitzhangjie/ruminate/internal/llm"
 )
+
+// mockEmbedder implements llm.EmbeddingProvider for testing.
+type mockEmbedder struct {
+	embedFunc    func(ctx context.Context, texts []string) ([][]float32, error)
+	embedCount   int
+	lastEmbedded string
+}
+
+func (m *mockEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	m.embedCount++
+	if len(texts) > 0 {
+		m.lastEmbedded = texts[0]
+	}
+	if m.embedFunc != nil {
+		return m.embedFunc(ctx, texts)
+	}
+	// Default: return fixed-size vectors
+	result := make([][]float32, len(texts))
+	for i := range texts {
+		result[i] = make([]float32, 3)
+		result[i][0] = float32(i + 1)
+	}
+	return result, nil
+}
+
+func (m *mockEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	vecs, err := m.Embed(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) == 0 {
+		return nil, fmt.Errorf("empty result")
+	}
+	return vecs[0], nil
+}
+
+// errorEmbedder always returns an error.
+type errorEmbedder struct{}
+
+func (e *errorEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return nil, fmt.Errorf("embedding service unavailable")
+}
+
+func (e *errorEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	return nil, fmt.Errorf("embedding service unavailable")
+}
+
+var _ llm.EmbeddingProvider = (*mockEmbedder)(nil)
 
 func TestManager_Init(t *testing.T) {
 	dir := t.TempDir()
@@ -507,5 +559,203 @@ func TestSanitizeFilename(t *testing.T) {
 				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
+	}
+}
+
+// --- Embedding tests ---
+
+func TestManager_Create_StoresEmbedding(t *testing.T) {
+	dir := t.TempDir()
+
+	mgr := NewManager(dir)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	defer mgr.Close()
+
+	embedder := &mockEmbedder{}
+	mgr.SetEmbeddingProvider(embedder)
+
+	page, err := mgr.Create("Test Page", PageTypeSummary, "# Test Content")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if embedder.embedCount != 1 {
+		t.Errorf("expected 1 embed call, got %d", embedder.embedCount)
+	}
+
+	// Verify vector was stored
+	results, err := mgr.Index().SearchByVector([]float32{1, 0, 0}, 1)
+	if err != nil {
+		t.Fatalf("SearchByVector error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected vector to be stored")
+	}
+	if results[0].Path != page.Path {
+		t.Errorf("stored vector path mismatch: %q vs %q", results[0].Path, page.Path)
+	}
+}
+
+func TestManager_AddSource_StoresEmbedding(t *testing.T) {
+	dir := t.TempDir()
+
+	mgr := NewManager(dir)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	defer mgr.Close()
+
+	embedder := &mockEmbedder{}
+	mgr.SetEmbeddingProvider(embedder)
+
+	relPath, err := mgr.AddSource("article", "My Article", []byte("# Article Content"))
+	if err != nil {
+		t.Fatalf("AddSource() error: %v", err)
+	}
+
+	if embedder.embedCount != 1 {
+		t.Errorf("expected 1 embed call, got %d", embedder.embedCount)
+	}
+
+	// Verify vector was stored for the raw source
+	results, err := mgr.Index().SearchByVector([]float32{1, 0, 0}, 2)
+	if err != nil {
+		t.Fatalf("SearchByVector error: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.Path == relPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected vector to be stored for raw source")
+	}
+}
+
+func TestManager_Update_RecomputesEmbedding(t *testing.T) {
+	dir := t.TempDir()
+
+	mgr := NewManager(dir)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	defer mgr.Close()
+
+	embedder := &mockEmbedder{}
+	mgr.SetEmbeddingProvider(embedder)
+
+	_, err := mgr.Create("Test Page", PageTypeSummary, "# Original")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	firstCount := embedder.embedCount
+
+	_, err = mgr.Update("Test Page", PageTypeSummary, "# Updated Content")
+	if err != nil {
+		t.Fatalf("Update() error: %v", err)
+	}
+
+	// Embed should be called again for the updated content
+	if embedder.embedCount != firstCount+1 {
+		t.Errorf("expected %d embed calls after update, got %d", firstCount+1, embedder.embedCount)
+	}
+	if embedder.lastEmbedded != "# Updated Content" {
+		t.Errorf("expected updated content to be embedded, got %q", embedder.lastEmbedded)
+	}
+}
+
+func TestManager_Delete_RemovesEmbedding(t *testing.T) {
+	dir := t.TempDir()
+
+	mgr := NewManager(dir)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	defer mgr.Close()
+
+	embedder := &mockEmbedder{}
+	mgr.SetEmbeddingProvider(embedder)
+
+	page, err := mgr.Create("Temp Page", PageTypeConcept, "# Temp")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	// Verify vector exists
+	results, _ := mgr.Index().SearchByVector([]float32{1, 0, 0}, 5)
+	if len(results) == 0 {
+		t.Fatal("vector should exist before delete")
+	}
+
+	if err := mgr.Delete("Temp Page", PageTypeConcept); err != nil {
+		t.Fatalf("Delete() error: %v", err)
+	}
+
+	// Verify vector is gone
+	results, _ = mgr.Index().SearchByVector([]float32{1, 0, 0}, 5)
+	for _, r := range results {
+		if r.Path == page.Path {
+			t.Error("vector should be removed after delete")
+		}
+	}
+}
+
+func TestManager_NoEmbedder_SkipsGracefully(t *testing.T) {
+	dir := t.TempDir()
+
+	mgr := NewManager(dir)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	defer mgr.Close()
+
+	// No SetEmbeddingProvider call — embedder is nil
+
+	_, err := mgr.Create("Test Page", PageTypeSummary, "# No Embedder")
+	if err != nil {
+		t.Fatalf("Create() should succeed without embedder: %v", err)
+	}
+
+	// AddSource should also work
+	_, err = mgr.AddSource("article", "Test", []byte("content"))
+	if err != nil {
+		t.Fatalf("AddSource() should succeed without embedder: %v", err)
+	}
+
+	// Delete should also work
+	err = mgr.Delete("Test Page", PageTypeSummary)
+	if err != nil {
+		t.Fatalf("Delete() should succeed without embedder: %v", err)
+	}
+}
+
+func TestManager_EmbedderError_DoesNotBlockWrite(t *testing.T) {
+	dir := t.TempDir()
+
+	mgr := NewManager(dir)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	defer mgr.Close()
+
+	mgr.SetEmbeddingProvider(&errorEmbedder{})
+
+	// Create should succeed even though embedder fails
+	_, err := mgr.Create("Test Page", PageTypeSummary, "# Content")
+	if err != nil {
+		t.Fatalf("Create() should succeed even when embedder fails: %v", err)
+	}
+
+	// Verify page was written to disk
+	page, readErr := mgr.Read("Test Page", PageTypeSummary)
+	if readErr != nil {
+		t.Fatalf("page should exist on disk: %v", readErr)
+	}
+	if page.Content != "# Content" {
+		t.Errorf("page content mismatch")
 	}
 }

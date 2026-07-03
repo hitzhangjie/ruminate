@@ -298,8 +298,9 @@ func TestDeserializeVector_TooShort(t *testing.T) {
 }
 
 func TestDeserializeVector_DimensionMismatch(t *testing.T) {
-	// Declare dim=10 but provide data for dim=1
-	data := []byte{0x0A, 0x00, 0x00, 0x00, 0x00, 0x00} // dim=10, but only 6 bytes total
+	// Header claims 10 dimensions (0x000A), but the total data is only 6 bytes.
+	// 10 dims require 2 + 10*4 = 42 bytes, so deserialization should fail.
+	data := []byte{0x0A, 0x00, 0x00, 0x00, 0x00, 0x00}
 	_, err := deserializeVector(data)
 	if err == nil {
 		t.Error("expected dimension mismatch error")

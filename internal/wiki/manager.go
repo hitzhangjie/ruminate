@@ -1,6 +1,7 @@
 package wiki
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/gitwrap"
+	"github.com/hitzhangjie/ruminate/internal/llm"
 )
 
 // PageType classifies a wiki page.
@@ -36,12 +38,19 @@ type Page struct {
 
 // Manager handles wiki page CRUD and directory structure.
 type Manager struct {
-	root    string        // wiki root directory path
-	wikiDir string        // wiki/ subdirectory
-	rawDir  string        // raw/ subdirectory
-	git     *gitwrap.Git  // git wrapper for version control
-	index   *IndexManager // index manager
-	log     *LogManager   // log manager
+	root     string               // wiki root directory path
+	wikiDir  string               // wiki/ subdirectory
+	rawDir   string               // raw/ subdirectory
+	git      *gitwrap.Git         // git wrapper for version control
+	index    *IndexManager        // index manager
+	log      *LogManager          // log manager
+	embedder llm.EmbeddingProvider // optional embedding provider for semantic search
+}
+
+// SetEmbeddingProvider sets the embedding provider used to compute vectors
+// for pages created/updated via this Manager. Pass nil to disable embeddings.
+func (m *Manager) SetEmbeddingProvider(ep llm.EmbeddingProvider) {
+	m.embedder = ep
 }
 
 // NewManager creates a wiki manager for the given root path.
@@ -163,6 +172,9 @@ func (m *Manager) AddSource(sourceType string, title string, content []byte) (st
 		return "", fmt.Errorf("indexing raw source: %w", err)
 	}
 
+	// Compute and store embedding for semantic search
+	m.computeAndStoreEmbedding(string(content), relPath)
+
 	return relPath, nil
 }
 
@@ -232,6 +244,9 @@ func (m *Manager) Create(title string, pageType PageType, content string) (*Page
 	if err := m.index.AddPage(page); err != nil {
 		return nil, fmt.Errorf("updating index: %w", err)
 	}
+
+	// Compute and store embedding for semantic search
+	m.computeAndStoreEmbedding(content, page.Path)
 
 	// Write log entry
 	if err := m.log.Append("create", pageType, title, ""); err != nil {
@@ -326,6 +341,9 @@ func (m *Manager) Update(title string, pageType PageType, newContent string) (*P
 		return nil, fmt.Errorf("updating index: %w", err)
 	}
 
+	// Recompute and store embedding for updated content
+	m.computeAndStoreEmbedding(newContent, page.Path)
+
 	// Write log entry
 	if err := m.log.Append("update", pageType, title, ""); err != nil {
 		return nil, fmt.Errorf("writing log: %w", err)
@@ -355,6 +373,9 @@ func (m *Manager) Delete(title string, pageType PageType) error {
 	if err := m.index.RemovePage(relPath); err != nil {
 		return fmt.Errorf("updating index: %w", err)
 	}
+
+	// Remove embedding vector
+	m.deleteEmbedding(relPath)
 
 	// Write log entry
 	if err := m.log.Append("delete", pageType, title, ""); err != nil {
@@ -435,6 +456,32 @@ func (m *Manager) Close() error {
 		return m.index.Close()
 	}
 	return nil
+}
+
+// computeAndStoreEmbedding computes an embedding for the given content and
+// stores it in the vector index. Errors are logged but not returned — embedding
+// failures never block page writes.
+func (m *Manager) computeAndStoreEmbedding(content, path string) {
+	if m.embedder == nil {
+		return
+	}
+	vecs, err := m.embedder.Embed(context.Background(), []string{content})
+	if err != nil {
+		return
+	}
+	if len(vecs) == 0 {
+		return
+	}
+	_ = m.index.StoreVector(path, vecs[0])
+}
+
+// deleteEmbedding removes the embedding for a page. No-op if no embedder
+// is configured or the vector doesn't exist.
+func (m *Manager) deleteEmbedding(path string) {
+	if m.embedder == nil {
+		return
+	}
+	_ = m.index.DeleteVector(path)
 }
 
 // ensureComponents initializes index and log managers if they are nil.
