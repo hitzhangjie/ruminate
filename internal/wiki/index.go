@@ -65,7 +65,7 @@ func (im *IndexManager) Init() error {
 
 ## Synthesis
 
-*No synthesis pages yet.*
+*No synthesis yet.*
 `
 	if err := os.WriteFile(im.indexPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("writing index.md: %w", err)
@@ -543,7 +543,9 @@ func (im *IndexManager) updateIndexMd(page *Page, operation string) error {
 			// Exit section when we hit the next section header or end of content
 			if strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, sectionHeader) {
 				if !inserted && operation == "add" {
+					// Insert entry before the next section header (don't overwrite it)
 					newLines[len(newLines)-1] = targetLine
+					newLines = append(newLines, line)
 					inserted = true
 				}
 				inSection = false
