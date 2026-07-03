@@ -12,7 +12,7 @@
 | Phase 1 | Wiki 核心存储 | ✅ 已完成 | 4/4 |
 | Phase 2 | LLM 集成与摄入 | ✅ 已完成 | 4/4 |
 | Phase 3 | 查询与检索 | ✅ 已完成 | 3/3 |
-| Phase 4 | 巡检与 Web 服务 | ⬜ 未开始 | 0/3 |
+| Phase 4 | 巡检与 Web 服务 | 🔄 进行中 | 1/3 |
 | Phase 5 | Web 前端 | ⬜ 未开始 | 0/4 |
 | Phase 6 | 增强与打磨 (P1/P2) | ⬜ 未开始 | 0/4 |
 
@@ -97,7 +97,7 @@
 
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
-| 4.1 | Lint 引擎：矛盾检测、孤立页面、过时内容、缺失链接 | ⬜ | — | `ruminate lint` 命令 |
+| 4.1 | Lint 引擎：矛盾检测、孤立页面、过时内容、缺失链接 | ✅ | — | `ruminate lint` 命令 |
 | 4.2 | HTTP Server：REST API + WebSocket | ⬜ | — | 使用 [chi](https://github.com/go-chi/chi) 路由 |
 | 4.3 | `ruminate serve`：一键启动后端 + 代理前端 | ⬜ | — | 开发模式代理 Vite，生产模式嵌入静态文件 |
 
@@ -164,3 +164,4 @@
 | 2026-07-01 | Phase 1 完成：Wiki 核心存储 (CRUD, Index, WikiLink, Log, Init) |
 | 2026-07-02 | Phase 2 完成：LLM 集成与摄入 (Provider, Embedder, Ingest Engine, CLI) |
 | 2026-07-03 | Phase 3 完成：查询与检索 (FTS5 Search with snippets, AI Q&A with streaming, Answer writeback) |
+| 2026-07-03 | 任务 4.1 完成：Lint 引擎 (矛盾检测、孤立页面、过时内容、缺失链接) |
