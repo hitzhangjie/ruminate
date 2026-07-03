@@ -2,7 +2,9 @@ package wiki
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -80,6 +82,10 @@ func (im *IndexManager) Init() error {
 		return fmt.Errorf("creating FTS table: %w", err)
 	}
 
+	if err := im.createVectorTable(); err != nil {
+		return fmt.Errorf("creating vector table: %w", err)
+	}
+
 	return nil
 }
 
@@ -97,6 +103,160 @@ func (im *IndexManager) createFTSTable() error {
 	return err
 }
 
+// createVectorTable creates the page_vectors table for embedding storage.
+func (im *IndexManager) createVectorTable() error {
+	_, err := im.db.Exec(`
+		CREATE TABLE IF NOT EXISTS page_vectors (
+			path TEXT PRIMARY KEY,
+			embedding BLOB NOT NULL,
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)
+	`)
+	return err
+}
+
+// serializeVector encodes a []float32 vector into a compact binary format:
+// [2 bytes: dimension as uint16 LE][N*4 bytes: each float32 in LE].
+func serializeVector(vec []float32) []byte {
+	buf := make([]byte, 2+len(vec)*4)
+	binary.LittleEndian.PutUint16(buf[:2], uint16(len(vec)))
+	for i, v := range vec {
+		binary.LittleEndian.PutUint32(buf[2+i*4:], math.Float32bits(v))
+	}
+	return buf
+}
+
+// deserializeVector decodes a binary-encoded vector back to []float32.
+// Returns an error if the data is too short or the declared dimension doesn't
+// match the payload length.
+func deserializeVector(data []byte) ([]float32, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("vector data too short: %d bytes", len(data))
+	}
+	dim := binary.LittleEndian.Uint16(data[:2])
+	expected := 2 + int(dim)*4
+	if len(data) != expected {
+		return nil, fmt.Errorf("vector dimension mismatch: declared %d, got %d bytes", dim, len(data))
+	}
+	vec := make([]float32, dim)
+	for i := uint16(0); i < dim; i++ {
+		bits := binary.LittleEndian.Uint32(data[2+i*4:])
+		vec[i] = math.Float32frombits(bits)
+	}
+	return vec, nil
+}
+
+// cosineSimilarity returns the cosine similarity between two vectors.
+// Returns 0 if either vector is zero-length or dimensions don't match.
+func cosineSimilarity(a, b []float32) float32 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		normA += float64(a[i]) * float64(a[i])
+		normB += float64(b[i]) * float64(b[i])
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return float32(dot / (math.Sqrt(normA) * math.Sqrt(normB)))
+}
+
+// StoreVector inserts or replaces a page's embedding vector.
+func (im *IndexManager) StoreVector(path string, vec []float32) error {
+	if err := im.open(); err != nil {
+		return err
+	}
+	encoded := serializeVector(vec)
+	_, err := im.db.Exec(
+		"INSERT OR REPLACE INTO page_vectors (path, embedding, updated_at) VALUES (?, ?, datetime('now'))",
+		path, encoded,
+	)
+	if err != nil {
+		return fmt.Errorf("storing vector: %w", err)
+	}
+	return nil
+}
+
+// DeleteVector removes a page's embedding vector.
+func (im *IndexManager) DeleteVector(path string) error {
+	if err := im.open(); err != nil {
+		return err
+	}
+	_, err := im.db.Exec("DELETE FROM page_vectors WHERE path = ?", path)
+	if err != nil {
+		return fmt.Errorf("deleting vector: %w", err)
+	}
+	return nil
+}
+
+// SearchByVector performs brute-force cosine similarity search over all
+// stored embeddings and returns the top-N matching pages.
+func (im *IndexManager) SearchByVector(queryVec []float32, limit int) ([]SearchResult, error) {
+	if err := im.open(); err != nil {
+		return nil, err
+	}
+
+	rows, err := im.db.Query(`
+		SELECT pv.path, pv.embedding, p.title, p.page_type
+		FROM page_vectors pv
+		JOIN pages_fts p ON pv.path = p.path
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("querying vectors: %w", err)
+	}
+	defer rows.Close()
+
+	type scored struct {
+		SearchResult
+		score float32
+	}
+	var scoredList []scored
+
+	for rows.Next() {
+		var path, title, pageType string
+		var embData []byte
+		if err := rows.Scan(&path, &embData, &title, &pageType); err != nil {
+			return nil, fmt.Errorf("scanning vector row: %w", err)
+		}
+		vec, err := deserializeVector(embData)
+		if err != nil {
+			continue // skip corrupted vectors
+		}
+		sim := cosineSimilarity(queryVec, vec)
+		scoredList = append(scoredList, scored{
+			SearchResult: SearchResult{
+				IndexEntry: IndexEntry{
+					Path:  path,
+					Title: title,
+					Type:  PageType(pageType),
+				},
+			},
+			score: sim,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Sort by descending similarity
+	sort.Slice(scoredList, func(i, j int) bool {
+		return scoredList[i].score > scoredList[j].score
+	})
+
+	if limit > len(scoredList) {
+		limit = len(scoredList)
+	}
+	results := make([]SearchResult, limit)
+	for i := 0; i < limit; i++ {
+		results[i] = scoredList[i].SearchResult
+	}
+
+	return results, nil
+}
+
 // open opens the SQLite database if not already open.
 func (im *IndexManager) open() error {
 	if im.db != nil {
@@ -107,7 +267,10 @@ func (im *IndexManager) open() error {
 		return fmt.Errorf("opening FTS database: %w", err)
 	}
 	im.db = db
-	return im.createFTSTable()
+	if err := im.createFTSTable(); err != nil {
+		return err
+	}
+	return im.createVectorTable()
 }
 
 // AddPage adds a page to both index.md and the FTS5 index.

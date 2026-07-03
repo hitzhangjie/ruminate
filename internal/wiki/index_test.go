@@ -1,6 +1,7 @@
 package wiki
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,6 +267,136 @@ func TestPageTypeSection(t *testing.T) {
 		got := pageTypeSection(tt.pt)
 		if got != tt.expected {
 			t.Errorf("pageTypeSection(%q) = %q, want %q", tt.pt, got, tt.expected)
+		}
+	}
+}
+
+// --- Vector storage tests ---
+
+func TestSerializeDeserializeVector(t *testing.T) {
+	original := []float32{0.1, 0.2, 0.3, -0.5, 1.0}
+	data := serializeVector(original)
+	restored, err := deserializeVector(data)
+	if err != nil {
+		t.Fatalf("deserializeVector error: %v", err)
+	}
+	if len(restored) != len(original) {
+		t.Fatalf("length mismatch: %d vs %d", len(restored), len(original))
+	}
+	for i := range original {
+		if math.Abs(float64(restored[i]-original[i])) > 1e-6 {
+			t.Errorf("mismatch at [%d]: got %f, want %f", i, restored[i], original[i])
+		}
+	}
+}
+
+func TestDeserializeVector_TooShort(t *testing.T) {
+	_, err := deserializeVector([]byte{0x01}) // only 1 byte, need at least 2
+	if err == nil {
+		t.Error("expected error for short data")
+	}
+}
+
+func TestDeserializeVector_DimensionMismatch(t *testing.T) {
+	// Declare dim=10 but provide data for dim=1
+	data := []byte{0x0A, 0x00, 0x00, 0x00, 0x00, 0x00} // dim=10, but only 6 bytes total
+	_, err := deserializeVector(data)
+	if err == nil {
+		t.Error("expected dimension mismatch error")
+	}
+}
+
+func TestCosineSimilarity_Identity(t *testing.T) {
+	vec := []float32{1, 2, 3}
+	sim := cosineSimilarity(vec, vec)
+	if math.Abs(float64(sim-1.0)) > 1e-6 {
+		t.Errorf("identity similarity should be 1.0, got %f", sim)
+	}
+}
+
+func TestCosineSimilarity_Orthogonal(t *testing.T) {
+	a := []float32{1, 0, 0}
+	b := []float32{0, 1, 0}
+	sim := cosineSimilarity(a, b)
+	if math.Abs(float64(sim-0.0)) > 1e-6 {
+		t.Errorf("orthogonal similarity should be 0.0, got %f", sim)
+	}
+}
+
+func TestCosineSimilarity_ZeroVector(t *testing.T) {
+	a := []float32{0, 0, 0}
+	b := []float32{1, 2, 3}
+	sim := cosineSimilarity(a, b)
+	if sim != 0 {
+		t.Errorf("zero vector similarity should be 0, got %f", sim)
+	}
+}
+
+func TestCosineSimilarity_DimensionMismatch(t *testing.T) {
+	a := []float32{1, 2}
+	b := []float32{1, 2, 3}
+	sim := cosineSimilarity(a, b)
+	if sim != 0 {
+		t.Errorf("dimension mismatch similarity should be 0, got %f", sim)
+	}
+}
+
+func TestVectorStoreSearchDelete(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.md")
+	dbPath := filepath.Join(dir, "fts.db")
+
+	im := NewIndexManager(indexPath, dbPath)
+	if err := im.Init(); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	defer im.Close()
+
+	// Add pages to FTS5 (required for vector search JOIN)
+	pages := []*Page{
+		{Title: "java-install", Path: "wiki/summaries/java-install.md", Type: PageTypeSummary, Content: "How to install Java"},
+		{Title: "python-install", Path: "wiki/summaries/python-install.md", Type: PageTypeSummary, Content: "How to install Python"},
+		{Title: "go-install", Path: "wiki/summaries/go-install.md", Type: PageTypeSummary, Content: "How to install Go"},
+	}
+	for _, p := range pages {
+		if err := im.AddPage(p); err != nil {
+			t.Fatalf("AddPage error: %v", err)
+		}
+	}
+
+	// Store vectors: java page should be closest to java query
+	// Simplified: use sparse-like vectors for predictable results
+	storeVec := func(path string, vals ...float32) {
+		if err := im.StoreVector(path, vals); err != nil {
+			t.Fatalf("StoreVector(%s) error: %v", path, err)
+		}
+	}
+	storeVec("wiki/summaries/java-install.md", 1.0, 0.0, 0.0)
+	storeVec("wiki/summaries/python-install.md", 0.0, 1.0, 0.0)
+	storeVec("wiki/summaries/go-install.md", 0.0, 0.0, 1.0)
+
+	// Search: query vector close to java
+	queryVec := []float32{0.9, 0.1, 0.0}
+	results, err := im.SearchByVector(queryVec, 2)
+	if err != nil {
+		t.Fatalf("SearchByVector error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// java-install should be top result
+	if results[0].Title != "java-install" {
+		t.Errorf("top result should be java-install, got %s", results[0].Title)
+	}
+
+	// Delete java vector
+	if err := im.DeleteVector("wiki/summaries/java-install.md"); err != nil {
+		t.Fatalf("DeleteVector error: %v", err)
+	}
+	results, _ = im.SearchByVector(queryVec, 3)
+	for _, r := range results {
+		if r.Title == "java-install" {
+			t.Error("deleted vector should not appear in search results")
 		}
 	}
 }
