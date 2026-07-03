@@ -12,6 +12,12 @@ import (
 )
 
 // IndexManager manages both the human-readable index.md and the SQLite FTS5 index.
+//
+// IMPORTANT: pages_fts (SQLite FTS5) is the source of truth for SEARCH. Both `find` and
+// `ask` commands query pages_fts to locate relevant pages. index.md is a DERIVED
+// human-readable directory — it is rebuilt from pages_fts (see rebuildIndexMd), never
+// the other way around. Raw sources are indexed only in pages_fts and do NOT appear
+// in index.md at all.
 type IndexManager struct {
 	indexPath string // path to index.md
 	dbPath    string // path to the SQLite FTS5 database
@@ -206,6 +212,52 @@ func (im *IndexManager) Search(query string, limit int) ([]IndexEntry, error) {
 	}
 
 	return entries, rows.Err()
+}
+
+// SearchResult extends IndexEntry with a relevance-ranked snippet from FTS5.
+type SearchResult struct {
+	IndexEntry
+	Snippet string  // highlighted snippet from FTS5 snippet()
+	Rank    float64 // BM25 rank score (lower = more relevant)
+}
+
+// SearchWithSnippets performs a full-text search and returns results with
+// highlighted snippets using FTS5's snippet() function.
+//
+// The snippet function wraps matching terms in <b>...</b> tags. The caller
+// can render these as ANSI-bold for terminal output or HTML for web display.
+func (im *IndexManager) SearchWithSnippets(query string, limit int) ([]SearchResult, error) {
+	if err := im.open(); err != nil {
+		return nil, err
+	}
+
+	// snippet(pages_fts, 3, '<b>', '</b>', '...', 32)
+	//  - 3: column index of the content column (0=path, 1=title, 2=page_type, 3=content)
+	//  - '<b>', '</b>': highlight markers
+	//  - '...': ellipsis for truncated text
+	//  - 32: max tokens per snippet
+	sql := `SELECT path, title, page_type, snippet(pages_fts, 3, '<b>', '</b>', '...', 32) AS snippet, rank
+		FROM pages_fts
+		WHERE pages_fts MATCH ?
+		ORDER BY rank
+		LIMIT ?`
+
+	rows, err := im.db.Query(sql, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("searching FTS with snippets: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var r SearchResult
+		if err := rows.Scan(&r.Path, &r.Title, &r.Type, &r.Snippet, &r.Rank); err != nil {
+			return nil, fmt.Errorf("scanning FTS snippet result: %w", err)
+		}
+		results = append(results, r)
+	}
+
+	return results, rows.Err()
 }
 
 // ReadIndexMd reads and parses the current index.md.

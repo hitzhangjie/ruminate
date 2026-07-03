@@ -24,7 +24,7 @@ var initCmd = &cobra.Command{
 If no path is given, uses the wiki_path from configuration (default: "ruminate_wiki").`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wikiPath := "ruminate_wiki"
+		wikiPath := "~/ruminate_wiki"
 		if len(args) > 0 {
 			wikiPath = args[0]
 		}

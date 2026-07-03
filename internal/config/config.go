@@ -72,7 +72,7 @@ type ServerConfig struct {
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		WikiPath: "ruminate_wiki",
+		WikiPath: "~/ruminate_wiki",
 		LLM: LLMConfig{
 			Provider:       "ollama",
 			BaseURL:        "http://localhost:11434",
@@ -134,13 +134,13 @@ func Load() (*Config, error) {
 	}
 
 	// Expand path variables
-	loaded.WikiPath = expandPath(loaded.WikiPath)
+	loaded.WikiPath = ExpandPath(loaded.WikiPath)
 
 	return loaded, nil
 }
 
-// expandPath expands ~ and environment variables in a path.
-func expandPath(path string) string {
+// ExpandPath expands ~ and environment variables in a path.
+func ExpandPath(path string) string {
 	if len(path) > 0 && path[0] == '~' {
 		home, err := os.UserHomeDir()
 		if err == nil {

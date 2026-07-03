@@ -1,6 +1,6 @@
 # 任务进度追踪
 
-> 最后更新：2026-07-02
+> 最后更新：2026-07-03
 
 ---
 
@@ -11,7 +11,7 @@
 | Phase 0 | 项目骨架与基础设施 | ✅ 已完成 | 5/5 |
 | Phase 1 | Wiki 核心存储 | ✅ 已完成 | 4/4 |
 | Phase 2 | LLM 集成与摄入 | ✅ 已完成 | 4/4 |
-| Phase 3 | 查询与检索 | ⬜ 未开始 | 0/3 |
+| Phase 3 | 查询与检索 | ✅ 已完成 | 3/3 |
 | Phase 4 | 巡检与 Web 服务 | ⬜ 未开始 | 0/3 |
 | Phase 5 | Web 前端 | ⬜ 未开始 | 0/4 |
 | Phase 6 | 增强与打磨 (P1/P2) | ⬜ 未开始 | 0/4 |
@@ -80,9 +80,9 @@
 
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
-| 3.1 | 全文检索：SQLite FTS5 搜索，`ruminate find` 命令 | ⬜ | — | 支持 BM25 排序、片段高亮 |
-| 3.2 | AI 问答：`ruminate ask` 检索相关页 → LLM 综合 → 引用回答 | ⬜ | — | 流式输出支持 |
-| 3.3 | 回答回写：将好的问答结果保存为 Wiki 页面 | ⬜ | — | `ruminate ask --save "..."` |
+| 3.1 | 全文检索：SQLite FTS5 搜索，`ruminate find` 命令 | ✅ | — | 支持 BM25 排序、片段高亮 |
+| 3.2 | AI 问答：`ruminate ask` 检索相关页 → LLM 综合 → 引用回答 | ✅ | — | 流式输出支持 |
+| 3.3 | 回答回写：将好的问答结果保存为 Wiki 页面 | ✅ | — | `ruminate ask --save "..."` |
 
 **可交付**：
 - `ruminate find "关键词"` 返回匹配页面列表（高亮片段）
@@ -163,3 +163,4 @@
 | 2026-06-30 | Phase 0 完成：项目骨架、CLI、配置、Git 封装、前端脚手架 |
 | 2026-07-01 | Phase 1 完成：Wiki 核心存储 (CRUD, Index, WikiLink, Log, Init) |
 | 2026-07-02 | Phase 2 完成：LLM 集成与摄入 (Provider, Embedder, Ingest Engine, CLI) |
+| 2026-07-03 | Phase 3 完成：查询与检索 (FTS5 Search with snippets, AI Q&A with streaming, Answer writeback) |

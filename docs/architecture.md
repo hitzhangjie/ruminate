@@ -193,7 +193,7 @@ type EmbeddingProvider interface {
 ```
 用户执行: ruminate ask "问题"
 
-1. 检索相关页面 → FTS5 搜索 + 读取 index.md 定位
+1. 检索相关页面 → FTS5 搜索（pages_fts），按 BM25 评分排序取 top-N
 2. 读取候选页面内容（按相关性截取 top-N）
 3. 构建 LLM prompt → 系统提示 + 相关页面内容 + 用户问题
 4. LLM 综合回答 → 带引用标注
@@ -202,7 +202,19 @@ type EmbeddingProvider interface {
 
 ### 3.5 索引策略
 
-**index.md**（人类可读）:
+**核心原则**：`pages_fts` (SQLite FTS5) 是检索的唯一来源。`find` 和 `ask` 都直接查询 FTS5，不依赖 `index.md`。
+
+**SQLite FTS5 索引**（机器检索，搜索的唯一真相源）:
+- 为所有 Wiki 页面和 Raw 源文件建立 FTS5 全文索引
+- 支持 BM25 相关性排序
+- 支持前缀匹配、短语查询
+- 索引在每次 Wiki 变更后增量更新
+- Raw 源文件仅存在于 FTS5 索引中，不出现在 index.md
+
+**index.md**（人类可读，从 FTS5 派生）:
+- 纯 Markdown 文件，方便用任意编辑器浏览
+- 由 `pages_fts` 重建（`rebuildIndexMd`），而非反过来
+- 只包含 Wiki 页面，不包含 Raw 源文件
 ```markdown
 # Wiki Index
 
@@ -221,12 +233,6 @@ type EmbeddingProvider interface {
 - [知识库设计哲学](wiki/synthesis/design-philosophy.md) — 综合各方观点的综述
 - ...
 ```
-
-**SQLite FTS5 索引**（机器检索）:
-- 为所有 Wiki 页面建立 FTS5 全文索引
-- 支持 BM25 相关性排序
-- 支持前缀匹配、短语查询
-- 索引在每次 Wiki 变更后增量更新
 
 ### 3.6 Git 操作约定
 

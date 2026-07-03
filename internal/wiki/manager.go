@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/gitwrap"
 )
 
@@ -35,17 +36,18 @@ type Page struct {
 
 // Manager handles wiki page CRUD and directory structure.
 type Manager struct {
-	root     string        // wiki root directory path
-	wikiDir  string        // wiki/ subdirectory
-	rawDir   string        // raw/ subdirectory
-	git      *gitwrap.Git  // git wrapper for version control
-	index    *IndexManager // index manager
-	log      *LogManager   // log manager
+	root    string        // wiki root directory path
+	wikiDir string        // wiki/ subdirectory
+	rawDir  string        // raw/ subdirectory
+	git     *gitwrap.Git  // git wrapper for version control
+	index   *IndexManager // index manager
+	log     *LogManager   // log manager
 }
 
 // NewManager creates a wiki manager for the given root path.
 // If the wiki directory does not exist, Init() must be called to create it.
 func NewManager(root string) *Manager {
+	root = config.ExpandPath(root)
 	return &Manager{
 		root:    root,
 		wikiDir: filepath.Join(root, "wiki"),
