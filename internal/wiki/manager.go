@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/hitzhangjie/ruminate/internal/config"
@@ -38,13 +39,15 @@ type Page struct {
 
 // Manager handles wiki page CRUD and directory structure.
 type Manager struct {
-	root     string               // wiki root directory path
-	wikiDir  string               // wiki/ subdirectory
-	rawDir   string               // raw/ subdirectory
-	git      *gitwrap.Git         // git wrapper for version control
-	index    *IndexManager        // index manager
-	log      *LogManager          // log manager
-	embedder llm.EmbeddingProvider // optional embedding provider for semantic search
+	root        string               // wiki root directory path
+	wikiDir     string               // wiki/ subdirectory
+	rawDir      string               // raw/ subdirectory
+	git         *gitwrap.Git         // git wrapper for version control
+	index       *IndexManager        // index manager
+	log         *LogManager          // log manager
+	embedder    llm.EmbeddingProvider // optional embedding provider for semantic search
+	llmProvider llm.LLMProvider       // LLM provider for inference
+	llmCfg      config.LLMConfig      // LLM configuration
 }
 
 // SetEmbeddingProvider sets the embedding provider used to compute vectors
@@ -53,16 +56,43 @@ func (m *Manager) SetEmbeddingProvider(ep llm.EmbeddingProvider) {
 	m.embedder = ep
 }
 
-// NewManager creates a wiki manager for the given root path.
+// NewManager creates a wiki manager from the given configuration.
+// The embedder is automatically initialized from cfg.Embedding; a missing
+// or unreachable embedding provider is treated as non-fatal (embedder stays nil).
 // If the wiki directory does not exist, Init() must be called to create it.
-func NewManager(root string) *Manager {
-	root = config.ExpandPath(root)
-	return &Manager{
+func NewManager(cfg *config.Config) *Manager {
+	root := config.ExpandPath(cfg.WikiPath)
+	m := &Manager{
 		root:    root,
 		wikiDir: filepath.Join(root, "wiki"),
 		rawDir:  filepath.Join(root, "raw"),
 		git:     gitwrap.New(root),
 	}
+
+	// Auto-initialize embedder from config. Non-fatal: embedder stays nil
+	// if provider is empty or unreachable, keeping wiki operations working.
+	if cfg.Embedding.Provider != "" {
+		if embedder, err := llm.NewEmbeddingProvider(
+			cfg.Embedding.Provider,
+			cfg.Embedding.BaseURL,
+			cfg.Embedding.Model,
+		); err == nil {
+			m.embedder = embedder
+		}
+	}
+
+	// Auto-initialize LLM provider from config. Non-fatal: llmProvider stays
+	// nil if provider is empty or unreachable.
+	m.llmCfg = cfg.LLM
+	if cfg.LLM.Provider != "" {
+		if provider, err := llm.NewProvider(
+			cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model,
+		); err == nil {
+			m.llmProvider = provider
+		}
+	}
+
+	return m
 }
 
 // Root returns the wiki root directory path.
@@ -450,12 +480,128 @@ func (m *Manager) Git() *gitwrap.Git {
 	return m.git
 }
 
+// Embedder returns the embedding provider, or nil if none is configured.
+// This is the single access point for all embedder usage across components.
+func (m *Manager) Embedder() llm.EmbeddingProvider {
+	return m.embedder
+}
+
+// LLM returns the LLM provider, or nil if none is configured.
+// This is the single access point for all LLM inference across components.
+func (m *Manager) LLM() llm.LLMProvider {
+	return m.llmProvider
+}
+
+// LLMConfig returns the LLM configuration.
+func (m *Manager) LLMConfig() config.LLMConfig {
+	return m.llmCfg
+}
+
 // Close closes the wiki manager and releases resources (e.g., SQLite connection).
 func (m *Manager) Close() error {
 	if m.index != nil {
 		return m.index.Close()
 	}
 	return nil
+}
+
+// Search searches wiki pages and raw sources using hybrid retrieval (FTS5 +
+// vector similarity with RRF fusion) when an embedder is configured, falling
+// back to FTS5-only full-text search with AND→OR fallback.
+//
+// This is the primary search entry point for both simple lookups (find command)
+// and context retrieval for AI-powered Q&A (ask command).
+func (m *Manager) Search(ctx context.Context, query string, topN int) ([]SearchResult, error) {
+	m.ensureComponents()
+
+	if m.embedder != nil {
+		return m.hybridSearch(ctx, query, topN)
+	}
+	return m.index.SearchWithSnippets(query, topN)
+}
+
+// hybridSearch performs FTS5 keyword search and vector similarity search,
+// then fuses the two ranked lists with Reciprocal Rank Fusion (k=60).
+//
+// If either sub-search fails, the other is used alone. This ensures graceful
+// degradation when embeddings are unavailable for some pages or the embedder
+// encounters a transient error.
+func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]SearchResult, error) {
+	// Double the limit for each sub-search since RRF will deduplicate and re-rank.
+	subLimit := topN * 2
+
+	// FTS5 keyword search
+	ftsResults, ftsErr := m.index.SearchWithSnippets(query, subLimit)
+
+	// Vector similarity search
+	queryVec, embErr := m.embedder.EmbedQuery(ctx, query)
+	var vecResults []SearchResult
+	if embErr == nil {
+		vecResults, _ = m.index.SearchByVector(queryVec, subLimit)
+	}
+
+	// If both failed, return what we have
+	if ftsErr != nil && (embErr != nil || len(vecResults) == 0) {
+		if ftsErr != nil {
+			return nil, ftsErr
+		}
+		return nil, embErr
+	}
+
+	// If only one side succeeded, use it alone
+	if ftsErr != nil {
+		return vecResults[:min(topN, len(vecResults))], nil
+	}
+	if embErr != nil || len(vecResults) == 0 {
+		return ftsResults[:min(topN, len(ftsResults))], nil
+	}
+
+	// Fuse with RRF
+	return rrfFuse(ftsResults, vecResults, topN), nil
+}
+
+// rrfFuse fuses two ranked result lists using Reciprocal Rank Fusion (k=60).
+// Results are deduplicated by path and sorted by descending RRF score.
+func rrfFuse(ftsResults, vecResults []SearchResult, limit int) []SearchResult {
+	const k = 60
+
+	score := make(map[string]float64)
+	result := make(map[string]SearchResult)
+
+	for i, r := range ftsResults {
+		score[r.Path] += 1.0 / (k + float64(i+1))
+		if _, exists := result[r.Path]; !exists {
+			result[r.Path] = r
+		}
+	}
+	for i, r := range vecResults {
+		score[r.Path] += 1.0 / (k + float64(i+1))
+		if _, exists := result[r.Path]; !exists {
+			result[r.Path] = r
+		}
+	}
+
+	// Sort by descending score
+	type scored struct {
+		SearchResult
+		score float64
+	}
+	var list []scored
+	for path, r := range result {
+		list = append(list, scored{r, score[path]})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].score > list[j].score
+	})
+
+	if limit > len(list) {
+		limit = len(list)
+	}
+	out := make([]SearchResult, limit)
+	for i := 0; i < limit; i++ {
+		out[i] = list[i].SearchResult
+	}
+	return out
 }
 
 // computeAndStoreEmbedding computes an embedding for the given content and

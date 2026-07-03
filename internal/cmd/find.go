@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -37,13 +38,14 @@ Examples:
 		}
 
 		// Open wiki manager (search only needs index, not LLM)
-		mgr := wiki.NewManager(cfg.WikiPath)
+		mgr := wiki.NewManager(cfg)
 		if !mgr.IsInitialized() {
 			return fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
 		}
 
-		// Search with snippets
-		results, err := mgr.Index().SearchWithSnippets(keywords, findLimit)
+		// Search using hybrid retrieval when embedder is available, FTS5 otherwise
+		ctx := context.Background()
+		results, err := mgr.Search(ctx, keywords, findLimit)
 		if err != nil {
 			return fmt.Errorf("search failed: %w", err)
 		}

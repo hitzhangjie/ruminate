@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
@@ -29,7 +30,7 @@ If no path is given, uses the wiki_path from configuration (default: "ruminate_w
 			wikiPath = args[0]
 		}
 
-		mgr := wiki.NewManager(wikiPath)
+		mgr := wiki.NewManager(&config.Config{WikiPath: wikiPath})
 		if mgr.IsInitialized() {
 			fmt.Printf("Wiki already initialized at: %s\n", wikiPath)
 			return nil

@@ -7,8 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hitzhangjie/ruminate/internal/ingest"
-	"github.com/hitzhangjie/ruminate/internal/llm"
-	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
 var ingestCmd = &cobra.Command{
@@ -53,25 +51,11 @@ Requires an initialized wiki (run "ruminate init" first).`,
 			return fmt.Errorf("loading config: %w", err)
 		}
 
-		// Open wiki manager
-		mgr := wiki.NewManager(cfg.WikiPath)
-		if !mgr.IsInitialized() {
-			return fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
-		}
-
-		// Create LLM provider
-		provider, err := llm.NewProvider(cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model)
+		// Create ingest engine (internally initializes wiki.Manager)
+		engine, err := ingest.NewEngine(cfg)
 		if err != nil {
-			return fmt.Errorf("creating LLM provider: %w", err)
+			return err
 		}
-
-		// Set up embedding provider for automatic vector indexing (optional)
-		if embedder, err := llm.NewEmbeddingProvider(cfg.Embedding.Provider, cfg.Embedding.BaseURL, cfg.Embedding.Model); err == nil {
-			mgr.SetEmbeddingProvider(embedder)
-		}
-
-		// Create ingest engine
-		engine := ingest.NewEngine(mgr, provider, cfg.LLM)
 
 		// Run ingestion
 		fmt.Printf("Ingesting: %s (type: %s)\n", source, sourceType)

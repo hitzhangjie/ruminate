@@ -3,7 +3,6 @@ package query
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/hitzhangjie/ruminate/internal/llm"
@@ -75,7 +74,10 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 	messages := e.buildAskMessages(question, sources)
 
 	// 3. Call LLM
-	resp, err := e.llm.Chat(ctx, messages, &llm.ChatOptions{
+	if e.llmProvider == nil {
+		return nil, fmt.Errorf("no LLM provider configured — check your config")
+	}
+	resp, err := e.llmProvider.Chat(ctx, messages, &llm.ChatOptions{
 		Temperature: e.llmCfg.Temperature,
 	})
 	if err != nil {
@@ -141,7 +143,10 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 	messages := e.buildAskMessages(question, sources)
 
 	// 3. Start streaming LLM call
-	llmCh, err := e.llm.ChatStream(ctx, messages, &llm.ChatOptions{
+	if e.llmProvider == nil {
+		return nil, fmt.Errorf("no LLM provider configured — check your config")
+	}
+	llmCh, err := e.llmProvider.ChatStream(ctx, messages, &llm.ChatOptions{
 		Temperature: e.llmCfg.Temperature,
 	})
 	if err != nil {
@@ -186,28 +191,19 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 
 // retrieveContext searches the wiki for pages relevant to the question.
 //
-// When an EmbeddingProvider is configured, it uses hybrid retrieval:
-// FTS5 (keyword) + vector similarity, fused with Reciprocal Rank Fusion.
-// Otherwise falls back to FTS5-only with AND→OR fallback.
+// Delegates to Manager.Search, which uses hybrid retrieval (FTS5 + vector
+// similarity, RRF-fused) when an embedder is configured, falling back to
+// FTS5-only with AND→OR fallback otherwise.
 func (e *Engine) retrieveContext(ctx context.Context, question string, topN int) ([]Source, error) {
-	var results []wiki.SearchResult
-	var err error
-
-	if e.embedder != nil {
-		results, err = e.hybridSearch(ctx, question, topN)
-	} else {
-		results, err = e.wiki.Index().SearchWithSnippets(question, topN)
-	}
+	results, err := e.wiki.Search(ctx, question, topN)
 	if err != nil {
 		return nil, err
 	}
 
 	sources := make([]Source, 0, len(results))
 	for _, r := range results {
-		// Read the full page content for context
-		page, err := e.wiki.ReadByPath(r.Path)
-		if err != nil {
-			// Skip unreadable pages (don't fail the whole query)
+		// Validate the page is readable (skip if missing from disk)
+		if _, err := e.wiki.ReadByPath(r.Path); err != nil {
 			continue
 		}
 
@@ -216,94 +212,9 @@ func (e *Engine) retrieveContext(ctx context.Context, question string, topN int)
 			Path:    r.Path,
 			Snippet: stripTags(r.Snippet),
 		})
-
-		_ = page // page fetched successfully, used in buildAskMessages
 	}
 
 	return sources, nil
-}
-
-// hybridSearch performs FTS5 keyword search and vector similarity search,
-// then fuses the two ranked lists with Reciprocal Rank Fusion.
-//
-// If either search fails, the other is used alone. This ensures graceful
-// degradation when embeddings are unavailable for some pages.
-func (e *Engine) hybridSearch(ctx context.Context, question string, topN int) ([]wiki.SearchResult, error) {
-	// Double the limit for each sub-search since RRF will deduplicate and re-rank.
-	subLimit := topN * 2
-
-	// FTS5 keyword search
-	ftsResults, ftsErr := e.wiki.Index().SearchWithSnippets(question, subLimit)
-
-	// Vector similarity search
-	queryVec, embErr := e.embedder.EmbedQuery(ctx, question)
-	var vecResults []wiki.SearchResult
-	if embErr == nil {
-		vecResults, _ = e.wiki.Index().SearchByVector(queryVec, subLimit)
-	}
-
-	// If both failed, return what we have
-	if ftsErr != nil && (embErr != nil || len(vecResults) == 0) {
-		if ftsErr != nil {
-			return nil, ftsErr
-		}
-		return nil, embErr
-	}
-
-	// If only one side succeeded, use it alone
-	if ftsErr != nil {
-		return vecResults[:min(topN, len(vecResults))], nil
-	}
-	if embErr != nil || len(vecResults) == 0 {
-		return ftsResults[:min(topN, len(ftsResults))], nil
-	}
-
-	// Fuse with RRF
-	return rrfFuse(ftsResults, vecResults, topN), nil
-}
-
-// rrfFuse fuses two ranked result lists using Reciprocal Rank Fusion (k=60).
-// Results are deduplicated by path and sorted by descending RRF score.
-func rrfFuse(ftsResults, vecResults []wiki.SearchResult, limit int) []wiki.SearchResult {
-	const k = 60
-
-	score := make(map[string]float64)
-	result := make(map[string]wiki.SearchResult)
-
-	for i, r := range ftsResults {
-		score[r.Path] += 1.0 / (k + float64(i+1))
-		if _, exists := result[r.Path]; !exists {
-			result[r.Path] = r
-		}
-	}
-	for i, r := range vecResults {
-		score[r.Path] += 1.0 / (k + float64(i+1))
-		if _, exists := result[r.Path]; !exists {
-			result[r.Path] = r
-		}
-	}
-
-	// Sort by descending score
-	type scored struct {
-		wiki.SearchResult
-		score float64
-	}
-	var list []scored
-	for path, r := range result {
-		list = append(list, scored{r, score[path]})
-	}
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].score > list[j].score
-	})
-
-	if limit > len(list) {
-		limit = len(list)
-	}
-	out := make([]wiki.SearchResult, limit)
-	for i := 0; i < limit; i++ {
-		out[i] = list[i].SearchResult
-	}
-	return out
 }
 
 // buildAskMessages constructs the LLM prompt with context and question.

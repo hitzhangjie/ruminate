@@ -95,21 +95,45 @@ type ConceptInfo struct {
 }
 
 // Engine drives the ingest pipeline: read → analyze → update wiki → commit.
+//
+// Engine holds its own LLM provider reference rather than going through
+// wiki.Manager — Manager's LLM provider serves write-path needs (e.g. embeddings),
+// while Engine's provider serves the analysis phase (inference for source
+// decomposition into summary/entities/concepts).
 type Engine struct {
-	wiki   *wiki.Manager
-	llm    llm.LLMProvider
-	reader *Reader
-	llmCfg config.LLMConfig
+	wiki        *wiki.Manager
+	reader      *Reader
+	llmProvider llm.LLMProvider
+	llmCfg      config.LLMConfig
 }
 
-// NewEngine creates a new ingest Engine.
-func NewEngine(wiki *wiki.Manager, llmProvider llm.LLMProvider, llmCfg config.LLMConfig) *Engine {
-	return &Engine{
-		wiki:   wiki,
-		llm:    llmProvider,
-		reader: NewReader(),
-		llmCfg: llmCfg,
+// NewEngine creates a new ingest Engine from the given configuration.
+// It internally initializes the wiki.Manager and validates that the wiki
+// is initialized. Returns an error if the wiki has not been initialized yet.
+// The LLM provider is initialized from cfg; if unavailable, it stays nil
+// (callers should check before calling Ingest).
+func NewEngine(cfg *config.Config) (*Engine, error) {
+	mgr := wiki.NewManager(cfg)
+	if !mgr.IsInitialized() {
+		return nil, fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
 	}
+
+	// Initialize LLM provider for this engine's analysis needs.
+	// Non-fatal: provider stays nil if unreachable.
+	var llmProvider llm.LLMProvider
+	if cfg.LLM.Provider != "" {
+		provider, err := llm.NewProvider(cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model)
+		if err == nil {
+			llmProvider = provider
+		}
+	}
+
+	return &Engine{
+		wiki:        mgr,
+		reader:      NewReader(),
+		llmProvider: llmProvider,
+		llmCfg:      cfg.LLM,
+	}, nil
 }
 
 // Ingest processes a source (file path or URL) end-to-end:
@@ -175,12 +199,16 @@ func (e *Engine) analyze(ctx context.Context, src *Source) (*AnalysisResult, err
 		return nil, err
 	}
 
+	if e.llmProvider == nil {
+		return nil, fmt.Errorf("no LLM provider configured — check your config")
+	}
+
 	messages := []llm.Message{
 		{Role: "system", Content: ingestSystemPrompt},
 		{Role: "user", Content: src.Content},
 	}
 
-	resp, err := e.llm.Chat(ctx, messages, &llm.ChatOptions{
+	resp, err := e.llmProvider.Chat(ctx, messages, &llm.ChatOptions{
 		Temperature: e.llmCfg.Temperature,
 	})
 	if err != nil {

@@ -1,21 +1,19 @@
-package query
+package wiki
 
 import (
 	"testing"
-
-	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
 func TestRRFFuse_Normal(t *testing.T) {
-	fts := []wiki.SearchResult{
-		{IndexEntry: wiki.IndexEntry{Path: "a.md", Title: "A"}},
-		{IndexEntry: wiki.IndexEntry{Path: "b.md", Title: "B"}},
-		{IndexEntry: wiki.IndexEntry{Path: "c.md", Title: "C"}},
+	fts := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}},
+		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}},
+		{IndexEntry: IndexEntry{Path: "c.md", Title: "C"}},
 	}
-	vec := []wiki.SearchResult{
-		{IndexEntry: wiki.IndexEntry{Path: "b.md", Title: "B"}}, // appears in both lists
-		{IndexEntry: wiki.IndexEntry{Path: "d.md", Title: "D"}},
-		{IndexEntry: wiki.IndexEntry{Path: "a.md", Title: "A"}}, // appears in both lists
+	vec := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}}, // appears in both lists
+		{IndexEntry: IndexEntry{Path: "d.md", Title: "D"}},
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}}, // appears in both lists
 	}
 
 	// FTS ranks: A=1, B=2, C=3
@@ -41,12 +39,12 @@ func TestRRFFuse_Normal(t *testing.T) {
 }
 
 func TestRRFFuse_Limit(t *testing.T) {
-	fts := []wiki.SearchResult{
-		{IndexEntry: wiki.IndexEntry{Path: "a.md", Title: "A"}},
-		{IndexEntry: wiki.IndexEntry{Path: "b.md", Title: "B"}},
+	fts := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}},
+		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}},
 	}
-	vec := []wiki.SearchResult{
-		{IndexEntry: wiki.IndexEntry{Path: "c.md", Title: "C"}},
+	vec := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "c.md", Title: "C"}},
 	}
 
 	got := rrfFuse(fts, vec, 2)
@@ -56,9 +54,9 @@ func TestRRFFuse_Limit(t *testing.T) {
 }
 
 func TestRRFFuse_EmptyFTS(t *testing.T) {
-	vec := []wiki.SearchResult{
-		{IndexEntry: wiki.IndexEntry{Path: "a.md", Title: "A"}},
-		{IndexEntry: wiki.IndexEntry{Path: "b.md", Title: "B"}},
+	vec := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}},
+		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}},
 	}
 
 	got := rrfFuse(nil, vec, 5)
@@ -68,8 +66,8 @@ func TestRRFFuse_EmptyFTS(t *testing.T) {
 }
 
 func TestRRFFuse_EmptyVector(t *testing.T) {
-	fts := []wiki.SearchResult{
-		{IndexEntry: wiki.IndexEntry{Path: "a.md", Title: "A"}},
+	fts := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}},
 	}
 
 	got := rrfFuse(fts, nil, 5)
@@ -87,11 +85,11 @@ func TestRRFFuse_EmptyBoth(t *testing.T) {
 
 func TestRRFFuse_Deduplication(t *testing.T) {
 	// Same path appears in both lists — should appear once in output
-	fts := []wiki.SearchResult{
-		{IndexEntry: wiki.IndexEntry{Path: "a.md", Title: "A"}},
+	fts := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}},
 	}
-	vec := []wiki.SearchResult{
-		{IndexEntry: wiki.IndexEntry{Path: "a.md", Title: "A"}},
+	vec := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}},
 	}
 
 	got := rrfFuse(fts, vec, 3)

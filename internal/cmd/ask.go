@@ -8,9 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/query"
-	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
 var (
@@ -23,7 +21,7 @@ var askCmd = &cobra.Command{
 	Use:   "ask <question>",
 	Short: "Ask a question and get AI-synthesized answer from wiki",
 	Long: `Search relevant wiki pages and use LLM to synthesize
-a comprehensive answer with citations.
+	a comprehensive answer with citations.
 
 The ask pipeline:
   1. Search wiki pages using FTS5 full-text search
@@ -46,23 +44,11 @@ Examples:
 			return fmt.Errorf("loading config: %w", err)
 		}
 
-		// Open wiki manager
-		mgr := wiki.NewManager(cfg.WikiPath)
-		if !mgr.IsInitialized() {
-			return fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
-		}
-
-		// Create LLM provider
-		provider, err := llm.NewProvider(cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model)
+		// Create query engine (internally initializes wiki.Manager)
+		engine, err := query.NewEngine(cfg)
 		if err != nil {
-			return fmt.Errorf("creating LLM provider: %w", err)
+			return err
 		}
-
-		// Create embedding provider (optional; FTS5-only fallback on failure)
-		embedder, _ := llm.NewEmbeddingProvider(cfg.Embedding.Provider, cfg.Embedding.BaseURL, cfg.Embedding.Model)
-
-		// Create query engine
-		engine := query.NewEngine(mgr, provider, cfg.LLM, embedder)
 
 		opts := &query.AskOptions{
 			TopN:    askTopN,

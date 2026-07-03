@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 )
 
@@ -61,10 +62,17 @@ func (e *errorEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32,
 
 var _ llm.EmbeddingProvider = (*mockEmbedder)(nil)
 
+// testConfig returns a minimal config for unit tests.
+// Embedding is left at zero value so Manager.embedder stays nil
+// unless overridden via SetEmbeddingProvider.
+func testConfig(dir string) *config.Config {
+	return &config.Config{WikiPath: dir}
+}
+
 func TestManager_Init(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -114,7 +122,7 @@ func TestManager_Init(t *testing.T) {
 func TestManager_Init_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("first Init() error: %v", err)
 	}
@@ -129,7 +137,7 @@ func TestManager_Init_Idempotent(t *testing.T) {
 func TestManager_AddSource(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -187,7 +195,7 @@ func TestManager_AddSource(t *testing.T) {
 func TestManager_AddSource_Validation(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -207,7 +215,7 @@ func TestManager_AddSource_Validation(t *testing.T) {
 func TestManager_ListSources(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -257,7 +265,7 @@ func TestManager_ListSources(t *testing.T) {
 func TestManager_IsInitialized(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if mgr.IsInitialized() {
 		t.Error("should not be initialized before Init()")
 	}
@@ -275,7 +283,7 @@ func TestManager_IsInitialized(t *testing.T) {
 func TestManager_CreateAndRead(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -332,7 +340,7 @@ He previously worked at [[tesla]] and [[openai]].
 func TestManager_Create_Duplicate(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -352,7 +360,7 @@ func TestManager_Create_Duplicate(t *testing.T) {
 func TestManager_Update(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -391,7 +399,7 @@ func TestManager_Update(t *testing.T) {
 func TestManager_Update_Nonexistent(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -406,7 +414,7 @@ func TestManager_Update_Nonexistent(t *testing.T) {
 func TestManager_Delete(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -431,7 +439,7 @@ func TestManager_Delete(t *testing.T) {
 func TestManager_Delete_Nonexistent(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -446,7 +454,7 @@ func TestManager_Delete_Nonexistent(t *testing.T) {
 func TestManager_List(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -500,7 +508,7 @@ func TestManager_List(t *testing.T) {
 func TestManager_ReadByPath(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -525,7 +533,7 @@ func TestManager_ReadByPath(t *testing.T) {
 func TestManager_ReadByPath_Nonexistent(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(dir)
+	mgr := NewManager(testConfig(dir))
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -572,7 +580,7 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("Create_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -606,7 +614,7 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("AddSource_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -644,7 +652,7 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -676,7 +684,7 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("Delete_RemovesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -712,7 +720,7 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("NoEmbedder_SkipsGracefully", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -741,7 +749,7 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("EmbedderError_DoesNotBlockWrite", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -779,7 +787,7 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Create_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -823,7 +831,7 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("AddSource_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -863,7 +871,7 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -911,7 +919,7 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Delete_RemovesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(dir)
+		mgr := NewManager(testConfig(dir))
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
