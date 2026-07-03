@@ -65,6 +65,11 @@ Requires an initialized wiki (run "ruminate init" first).`,
 			return fmt.Errorf("creating LLM provider: %w", err)
 		}
 
+		// Set up embedding provider for automatic vector indexing (optional)
+		if embedder, err := llm.NewEmbeddingProvider(cfg.Embedding.Provider, cfg.Embedding.BaseURL, cfg.Embedding.Model); err == nil {
+			mgr.SetEmbeddingProvider(embedder)
+		}
+
 		// Create ingest engine
 		engine := ingest.NewEngine(mgr, provider, cfg.LLM)
 

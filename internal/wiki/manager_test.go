@@ -3,10 +3,12 @@ package wiki
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hitzhangjie/ruminate/internal/llm"
 )
@@ -562,200 +564,434 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
-// --- Embedding tests ---
+// =============================================================================
+// Embedding tests — mock-based (no real Ollama required)
+// =============================================================================
 
-func TestManager_Create_StoresEmbedding(t *testing.T) {
-	dir := t.TempDir()
+func TestManager_Embedding_Mock(t *testing.T) {
+	t.Run("Create_StoresEmbedding", func(t *testing.T) {
+		dir := t.TempDir()
 
-	mgr := NewManager(dir)
-	if err := mgr.Init(); err != nil {
-		t.Fatalf("Init() error: %v", err)
-	}
-	defer mgr.Close()
-
-	embedder := &mockEmbedder{}
-	mgr.SetEmbeddingProvider(embedder)
-
-	page, err := mgr.Create("Test Page", PageTypeSummary, "# Test Content")
-	if err != nil {
-		t.Fatalf("Create() error: %v", err)
-	}
-
-	if embedder.embedCount != 1 {
-		t.Errorf("expected 1 embed call, got %d", embedder.embedCount)
-	}
-
-	// Verify vector was stored
-	results, err := mgr.Index().SearchByVector([]float32{1, 0, 0}, 1)
-	if err != nil {
-		t.Fatalf("SearchByVector error: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatal("expected vector to be stored")
-	}
-	if results[0].Path != page.Path {
-		t.Errorf("stored vector path mismatch: %q vs %q", results[0].Path, page.Path)
-	}
-}
-
-func TestManager_AddSource_StoresEmbedding(t *testing.T) {
-	dir := t.TempDir()
-
-	mgr := NewManager(dir)
-	if err := mgr.Init(); err != nil {
-		t.Fatalf("Init() error: %v", err)
-	}
-	defer mgr.Close()
-
-	embedder := &mockEmbedder{}
-	mgr.SetEmbeddingProvider(embedder)
-
-	relPath, err := mgr.AddSource("article", "My Article", []byte("# Article Content"))
-	if err != nil {
-		t.Fatalf("AddSource() error: %v", err)
-	}
-
-	if embedder.embedCount != 1 {
-		t.Errorf("expected 1 embed call, got %d", embedder.embedCount)
-	}
-
-	// Verify vector was stored for the raw source
-	results, err := mgr.Index().SearchByVector([]float32{1, 0, 0}, 2)
-	if err != nil {
-		t.Fatalf("SearchByVector error: %v", err)
-	}
-	found := false
-	for _, r := range results {
-		if r.Path == relPath {
-			found = true
-			break
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
 		}
-	}
-	if !found {
-		t.Error("expected vector to be stored for raw source")
-	}
-}
+		defer mgr.Close()
 
-func TestManager_Update_RecomputesEmbedding(t *testing.T) {
-	dir := t.TempDir()
+		embedder := &mockEmbedder{}
+		mgr.SetEmbeddingProvider(embedder)
 
-	mgr := NewManager(dir)
-	if err := mgr.Init(); err != nil {
-		t.Fatalf("Init() error: %v", err)
-	}
-	defer mgr.Close()
-
-	embedder := &mockEmbedder{}
-	mgr.SetEmbeddingProvider(embedder)
-
-	_, err := mgr.Create("Test Page", PageTypeSummary, "# Original")
-	if err != nil {
-		t.Fatalf("Create() error: %v", err)
-	}
-	firstCount := embedder.embedCount
-
-	_, err = mgr.Update("Test Page", PageTypeSummary, "# Updated Content")
-	if err != nil {
-		t.Fatalf("Update() error: %v", err)
-	}
-
-	// Embed should be called again for the updated content
-	if embedder.embedCount != firstCount+1 {
-		t.Errorf("expected %d embed calls after update, got %d", firstCount+1, embedder.embedCount)
-	}
-	if embedder.lastEmbedded != "# Updated Content" {
-		t.Errorf("expected updated content to be embedded, got %q", embedder.lastEmbedded)
-	}
-}
-
-func TestManager_Delete_RemovesEmbedding(t *testing.T) {
-	dir := t.TempDir()
-
-	mgr := NewManager(dir)
-	if err := mgr.Init(); err != nil {
-		t.Fatalf("Init() error: %v", err)
-	}
-	defer mgr.Close()
-
-	embedder := &mockEmbedder{}
-	mgr.SetEmbeddingProvider(embedder)
-
-	page, err := mgr.Create("Temp Page", PageTypeConcept, "# Temp")
-	if err != nil {
-		t.Fatalf("Create() error: %v", err)
-	}
-
-	// Verify vector exists
-	results, _ := mgr.Index().SearchByVector([]float32{1, 0, 0}, 5)
-	if len(results) == 0 {
-		t.Fatal("vector should exist before delete")
-	}
-
-	if err := mgr.Delete("Temp Page", PageTypeConcept); err != nil {
-		t.Fatalf("Delete() error: %v", err)
-	}
-
-	// Verify vector is gone
-	results, _ = mgr.Index().SearchByVector([]float32{1, 0, 0}, 5)
-	for _, r := range results {
-		if r.Path == page.Path {
-			t.Error("vector should be removed after delete")
+		page, err := mgr.Create("Test Page", PageTypeSummary, "# Test Content")
+		if err != nil {
+			t.Fatalf("Create() error: %v", err)
 		}
-	}
+
+		if embedder.embedCount != 1 {
+			t.Errorf("expected 1 embed call, got %d", embedder.embedCount)
+		}
+
+		// Verify vector was stored
+		results, err := mgr.Index().SearchByVector([]float32{1, 0, 0}, 1)
+		if err != nil {
+			t.Fatalf("SearchByVector error: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected vector to be stored")
+		}
+		if results[0].Path != page.Path {
+			t.Errorf("stored vector path mismatch: %q vs %q", results[0].Path, page.Path)
+		}
+	})
+
+	t.Run("AddSource_StoresEmbedding", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
+
+		embedder := &mockEmbedder{}
+		mgr.SetEmbeddingProvider(embedder)
+
+		relPath, err := mgr.AddSource("article", "My Article", []byte("# Article Content"))
+		if err != nil {
+			t.Fatalf("AddSource() error: %v", err)
+		}
+
+		if embedder.embedCount != 1 {
+			t.Errorf("expected 1 embed call, got %d", embedder.embedCount)
+		}
+
+		// Verify vector was stored for the raw source
+		results, err := mgr.Index().SearchByVector([]float32{1, 0, 0}, 2)
+		if err != nil {
+			t.Fatalf("SearchByVector error: %v", err)
+		}
+		found := false
+		for _, r := range results {
+			if r.Path == relPath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected vector to be stored for raw source")
+		}
+	})
+
+	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
+
+		embedder := &mockEmbedder{}
+		mgr.SetEmbeddingProvider(embedder)
+
+		_, err := mgr.Create("Test Page", PageTypeSummary, "# Original")
+		if err != nil {
+			t.Fatalf("Create() error: %v", err)
+		}
+		firstCount := embedder.embedCount
+
+		_, err = mgr.Update("Test Page", PageTypeSummary, "# Updated Content")
+		if err != nil {
+			t.Fatalf("Update() error: %v", err)
+		}
+
+		// Embed should be called again for the updated content
+		if embedder.embedCount != firstCount+1 {
+			t.Errorf("expected %d embed calls after update, got %d", firstCount+1, embedder.embedCount)
+		}
+		if embedder.lastEmbedded != "# Updated Content" {
+			t.Errorf("expected updated content to be embedded, got %q", embedder.lastEmbedded)
+		}
+	})
+
+	t.Run("Delete_RemovesEmbedding", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
+
+		embedder := &mockEmbedder{}
+		mgr.SetEmbeddingProvider(embedder)
+
+		page, err := mgr.Create("Temp Page", PageTypeConcept, "# Temp")
+		if err != nil {
+			t.Fatalf("Create() error: %v", err)
+		}
+
+		// Verify vector exists
+		results, _ := mgr.Index().SearchByVector([]float32{1, 0, 0}, 5)
+		if len(results) == 0 {
+			t.Fatal("vector should exist before delete")
+		}
+
+		if err := mgr.Delete("Temp Page", PageTypeConcept); err != nil {
+			t.Fatalf("Delete() error: %v", err)
+		}
+
+		// Verify vector is gone
+		results, _ = mgr.Index().SearchByVector([]float32{1, 0, 0}, 5)
+		for _, r := range results {
+			if r.Path == page.Path {
+				t.Error("vector should be removed after delete")
+			}
+		}
+	})
+
+	t.Run("NoEmbedder_SkipsGracefully", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
+
+		// No SetEmbeddingProvider call — embedder is nil
+
+		_, err := mgr.Create("Test Page", PageTypeSummary, "# No Embedder")
+		if err != nil {
+			t.Fatalf("Create() should succeed without embedder: %v", err)
+		}
+
+		// AddSource should also work
+		_, err = mgr.AddSource("article", "Test", []byte("content"))
+		if err != nil {
+			t.Fatalf("AddSource() should succeed without embedder: %v", err)
+		}
+
+		// Delete should also work
+		err = mgr.Delete("Test Page", PageTypeSummary)
+		if err != nil {
+			t.Fatalf("Delete() should succeed without embedder: %v", err)
+		}
+	})
+
+	t.Run("EmbedderError_DoesNotBlockWrite", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
+
+		mgr.SetEmbeddingProvider(&errorEmbedder{})
+
+		// Create should succeed even though embedder fails
+		_, err := mgr.Create("Test Page", PageTypeSummary, "# Content")
+		if err != nil {
+			t.Fatalf("Create() should succeed even when embedder fails: %v", err)
+		}
+
+		// Verify page was written to disk
+		page, readErr := mgr.Read("Test Page", PageTypeSummary)
+		if readErr != nil {
+			t.Fatalf("page should exist on disk: %v", readErr)
+		}
+		if page.Content != "# Content" {
+			t.Errorf("page content mismatch")
+		}
+	})
 }
 
-func TestManager_NoEmbedder_SkipsGracefully(t *testing.T) {
-	dir := t.TempDir()
+// =============================================================================
+// Embedding tests — real Ollama integration (skipped if Ollama unavailable)
+// =============================================================================
 
-	mgr := NewManager(dir)
-	if err := mgr.Init(); err != nil {
-		t.Fatalf("Init() error: %v", err)
-	}
-	defer mgr.Close()
+func TestManager_Embedding_Ollama(t *testing.T) {
+	skipIfOllamaUnavailable(t)
 
-	// No SetEmbeddingProvider call — embedder is nil
+	baseURL := ollamaBaseURL()
+	model := ollamaEmbedModel()
 
-	_, err := mgr.Create("Test Page", PageTypeSummary, "# No Embedder")
-	if err != nil {
-		t.Fatalf("Create() should succeed without embedder: %v", err)
-	}
+	t.Run("Create_StoresEmbedding", func(t *testing.T) {
+		dir := t.TempDir()
 
-	// AddSource should also work
-	_, err = mgr.AddSource("article", "Test", []byte("content"))
-	if err != nil {
-		t.Fatalf("AddSource() should succeed without embedder: %v", err)
-	}
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
 
-	// Delete should also work
-	err = mgr.Delete("Test Page", PageTypeSummary)
-	if err != nil {
-		t.Fatalf("Delete() should succeed without embedder: %v", err)
-	}
+		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		mgr.SetEmbeddingProvider(embedder)
+
+		title := fmt.Sprintf("OllamaEmbedTest_Create_%d", time.Now().UnixNano())
+		page, err := mgr.Create(title, PageTypeEntity, "# Ollama Create Test\n\nThis page was created by an integration test.")
+		if err != nil {
+			t.Fatalf("Create() error: %v", err)
+		}
+
+		// Search using the page's own content — should find itself via semantic similarity.
+		queryVec, err := embedder.EmbedQuery(context.Background(), "Ollama Create Test")
+		if err != nil {
+			t.Fatalf("EmbedQuery error: %v", err)
+		}
+		results, err := mgr.Index().SearchByVector(queryVec, 3)
+		if err != nil {
+			t.Fatalf("SearchByVector error: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected at least one vector result after Create with Ollama embedder")
+		}
+
+		found := false
+		for _, r := range results {
+			if r.Path == page.Path {
+				found = true
+				t.Logf("found page with rank %.4f", r.Rank)
+				break
+			}
+		}
+		if !found {
+			t.Errorf("created page %q not found in vector search results", page.Path)
+		}
+	})
+
+	t.Run("AddSource_StoresEmbedding", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
+
+		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		mgr.SetEmbeddingProvider(embedder)
+
+		title := fmt.Sprintf("OllamaEmbedTest_AddSource_%d", time.Now().UnixNano())
+		relPath, err := mgr.AddSource("article", title, []byte("# Ollama AddSource Test\n\nSource material for integration test."))
+		if err != nil {
+			t.Fatalf("AddSource() error: %v", err)
+		}
+
+		queryVec, err := embedder.EmbedQuery(context.Background(), "Ollama AddSource Test")
+		if err != nil {
+			t.Fatalf("EmbedQuery error: %v", err)
+		}
+		results, err := mgr.Index().SearchByVector(queryVec, 3)
+		if err != nil {
+			t.Fatalf("SearchByVector error: %v", err)
+		}
+
+		found := false
+		for _, r := range results {
+			if r.Path == relPath {
+				found = true
+				t.Logf("found raw source with rank %.4f", r.Rank)
+				break
+			}
+		}
+		if !found {
+			t.Errorf("raw source %q not found in vector search results", relPath)
+		}
+	})
+
+	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
+
+		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		mgr.SetEmbeddingProvider(embedder)
+
+		title := fmt.Sprintf("OllamaEmbedTest_Update_%d", time.Now().UnixNano())
+		_, err := mgr.Create(title, PageTypeConcept, "# Original Ollama Content\n\nBefore update.")
+		if err != nil {
+			t.Fatalf("Create() error: %v", err)
+		}
+
+		// Update with substantially different content so the embedding shifts.
+		_, err = mgr.Update(title, PageTypeConcept, "# Updated Ollama Content\n\nCompletely different topic about machine learning and AI.")
+		if err != nil {
+			t.Fatalf("Update() error: %v", err)
+		}
+
+		// The updated content should be semantically closer to "machine learning" than the original.
+		queryVec, err := embedder.EmbedQuery(context.Background(), "machine learning and AI")
+		if err != nil {
+			t.Fatalf("EmbedQuery error: %v", err)
+		}
+		results, err := mgr.Index().SearchByVector(queryVec, 3)
+		if err != nil {
+			t.Fatalf("SearchByVector error: %v", err)
+		}
+
+		// The updated page should appear in results when searching for ML-related terms.
+		found := false
+		for _, r := range results {
+			if strings.Contains(r.Path, title) {
+				found = true
+				t.Logf("found updated page with rank %.4f", r.Rank)
+				break
+			}
+		}
+		if !found {
+			t.Errorf("updated page %q not found when searching for updated content", title)
+		}
+	})
+
+	t.Run("Delete_RemovesEmbedding", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mgr := NewManager(dir)
+		if err := mgr.Init(); err != nil {
+			t.Fatalf("Init() error: %v", err)
+		}
+		defer mgr.Close()
+
+		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		mgr.SetEmbeddingProvider(embedder)
+
+		title := fmt.Sprintf("OllamaEmbedTest_Delete_%d", time.Now().UnixNano())
+		page, err := mgr.Create(title, PageTypeConcept, "# Ollama Delete Test\n\nThis page will be deleted.")
+		if err != nil {
+			t.Fatalf("Create() error: %v", err)
+		}
+
+		// Confirm vector exists.
+		queryVec, err := embedder.EmbedQuery(context.Background(), "Ollama Delete Test")
+		if err != nil {
+			t.Fatalf("EmbedQuery error: %v", err)
+		}
+		results, err := mgr.Index().SearchByVector(queryVec, 5)
+		if err != nil {
+			t.Fatalf("SearchByVector error: %v", err)
+		}
+		existsBefore := false
+		for _, r := range results {
+			if r.Path == page.Path {
+				existsBefore = true
+				break
+			}
+		}
+		if !existsBefore {
+			t.Fatal("vector should exist before delete")
+		}
+
+		// Delete and verify vector is gone.
+		if err := mgr.Delete(title, PageTypeConcept); err != nil {
+			t.Fatalf("Delete() error: %v", err)
+		}
+
+		results, err = mgr.Index().SearchByVector(queryVec, 10)
+		if err != nil {
+			t.Fatalf("SearchByVector error: %v", err)
+		}
+		for _, r := range results {
+			if r.Path == page.Path {
+				t.Error("vector should be removed after Delete")
+			}
+		}
+	})
 }
 
-func TestManager_EmbedderError_DoesNotBlockWrite(t *testing.T) {
-	dir := t.TempDir()
+// =============================================================================
+// Ollama test helpers
+// =============================================================================
 
-	mgr := NewManager(dir)
-	if err := mgr.Init(); err != nil {
-		t.Fatalf("Init() error: %v", err)
+// ollamaBaseURL returns the Ollama base URL from OLLAMA_BASE_URL env var,
+// falling back to http://localhost:11434.
+func ollamaBaseURL() string {
+	if u := os.Getenv("OLLAMA_BASE_URL"); u != "" {
+		return u
 	}
-	defer mgr.Close()
+	return "http://localhost:11434"
+}
 
-	mgr.SetEmbeddingProvider(&errorEmbedder{})
+// ollamaEmbedModel returns the embedding model from OLLAMA_EMBED_MODEL env var,
+// falling back to nomic-embed-text.
+func ollamaEmbedModel() string {
+	if m := os.Getenv("OLLAMA_EMBED_MODEL"); m != "" {
+		return m
+	}
+	return "nomic-embed-text"
+}
 
-	// Create should succeed even though embedder fails
-	_, err := mgr.Create("Test Page", PageTypeSummary, "# Content")
+// skipIfOllamaUnavailable skips the test if Ollama is not reachable.
+func skipIfOllamaUnavailable(t *testing.T) {
+	t.Helper()
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(ollamaBaseURL() + "/api/tags")
 	if err != nil {
-		t.Fatalf("Create() should succeed even when embedder fails: %v", err)
+		t.Skipf("ollama not available at %s: %v", ollamaBaseURL(), err)
 	}
-
-	// Verify page was written to disk
-	page, readErr := mgr.Read("Test Page", PageTypeSummary)
-	if readErr != nil {
-		t.Fatalf("page should exist on disk: %v", readErr)
-	}
-	if page.Content != "# Content" {
-		t.Errorf("page content mismatch")
-	}
+	defer resp.Body.Close()
 }

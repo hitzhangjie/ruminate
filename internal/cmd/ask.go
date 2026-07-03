@@ -58,8 +58,11 @@ Examples:
 			return fmt.Errorf("creating LLM provider: %w", err)
 		}
 
+		// Create embedding provider (optional; FTS5-only fallback on failure)
+		embedder, _ := llm.NewEmbeddingProvider(cfg.Embedding.Provider, cfg.Embedding.BaseURL, cfg.Embedding.Model)
+
 		// Create query engine
-		engine := query.NewEngine(mgr, provider, cfg.LLM)
+		engine := query.NewEngine(mgr, provider, cfg.LLM, embedder)
 
 		opts := &query.AskOptions{
 			TopN:    askTopN,
