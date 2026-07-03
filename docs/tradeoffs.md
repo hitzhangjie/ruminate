@@ -64,8 +64,7 @@ raw/（少数源文件）  ──ingest──►  wiki/（大量派生页面）
 
 ### 由此确定的开发方向
 
-1. **`ruminate lint --fix`**：LLM 直接从 lint issue 出发修改 wiki pages，lint -json > issues.json执行时会记录issues到
-   跨文件，然后lint --fix 协调内容。
+1. **`ruminate lint --fix`**：LLM 直接从 lint issue 出发修改 wiki pages，ruminate lint执行后要把issues序列化后输出到固定的隐藏文件，然后执行lint --fix时如果这个文件存在就处理这个文件中的issue，如果不存在就先创建再读取再进行修复。如果这个文件是1day前创建的就重新执行输出这个issues文件。
 2. **Contributing source 记录**（远期）：每个 wiki page 的 frontmatter 中记录哪些 raw
-   source 贡献了内容，用于追溯而非权威。
+   source 贡献了内容，用于追溯真相源中那些内容应该被更新，也要提示我们更新。
 3. **`ruminate rebuild`**（远期）：从 raw 重建 wiki 的便捷工具，但不要求 raw 被持续维护。
