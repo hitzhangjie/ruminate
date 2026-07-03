@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
@@ -190,22 +189,9 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 // the actual Markdown files for full content to feed into the LLM prompt.
 // index.md is not involved in this retrieval path.
 func (e *Engine) retrieveContext(question string, topN int) ([]Source, error) {
-	// First attempt: use the question as-is (FTS5 uses implicit AND between terms).
 	results, err := e.wiki.Index().SearchWithSnippets(question, topN)
 	if err != nil {
 		return nil, err
-	}
-
-	// Fallback: if AND semantics yield no results, broaden to OR so a single
-	// rare token (e.g. "2026") doesn't kill the entire query.
-	if len(results) == 0 {
-		orQuery := toFTS5OrQuery(question)
-		if orQuery != "" {
-			results, err = e.wiki.Index().SearchWithSnippets(orQuery, topN)
-			if err != nil {
-				return nil, err
-			}
-		}
 	}
 
 	sources := make([]Source, 0, len(results))
@@ -227,29 +213,6 @@ func (e *Engine) retrieveContext(question string, topN int) ([]Source, error) {
 	}
 
 	return sources, nil
-}
-
-// toFTS5OrQuery transforms a natural-language question into an OR-connected
-// FTS5 query. It splits on whitespace, drops very short tokens, and joins
-// with " OR " so that matching ANY token is sufficient.
-func toFTS5OrQuery(question string) string {
-	words := strings.FieldsFunc(question, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsPunct(r)
-	})
-
-	var filtered []string
-	for _, w := range words {
-		// Keep tokens of at least 2 characters to avoid matching noise.
-		if len(w) >= 2 {
-			filtered = append(filtered, `"`+w+`"`)
-		}
-	}
-
-	if len(filtered) == 0 {
-		return ""
-	}
-
-	return strings.Join(filtered, " OR ")
 }
 
 // buildAskMessages constructs the LLM prompt with context and question.

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "modernc.org/sqlite"
 )
@@ -231,6 +232,30 @@ func (im *IndexManager) SearchWithSnippets(query string, limit int) ([]SearchRes
 		return nil, err
 	}
 
+	// First attempt: use the query as-is (FTS5 uses implicit AND between terms).
+	results, err := im.searchWithSnippets(query, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fallback: if AND semantics yield no results, broaden to OR so a single
+	// rare token (e.g. "2026") doesn't kill the entire query.
+	if len(results) == 0 {
+		orQuery := toFTS5OrQuery(query)
+		if orQuery != "" {
+			results, err = im.searchWithSnippets(orQuery, limit)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return results, nil
+}
+
+// searchWithSnippets is the internal implementation that executes the FTS5 query.
+func (im *IndexManager) searchWithSnippets(query string, limit int) ([]SearchResult, error) {
+
 	// snippet(pages_fts, 3, '<b>', '</b>', '...', 32)
 	//  - 3: column index of the content column (0=path, 1=title, 2=page_type, 3=content)
 	//  - '<b>', '</b>': highlight markers
@@ -258,6 +283,29 @@ func (im *IndexManager) SearchWithSnippets(query string, limit int) ([]SearchRes
 	}
 
 	return results, rows.Err()
+}
+
+// toFTS5OrQuery transforms a natural-language query into an OR-connected
+// FTS5 query. It splits on whitespace/punctuation, drops very short tokens,
+// and joins with " OR " so that matching ANY token is sufficient.
+func toFTS5OrQuery(query string) string {
+	words := strings.FieldsFunc(query, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r)
+	})
+
+	var filtered []string
+	for _, w := range words {
+		// Keep tokens of at least 2 characters to avoid matching noise.
+		if len(w) >= 2 {
+			filtered = append(filtered, `"`+w+`"`)
+		}
+	}
+
+	if len(filtered) == 0 {
+		return ""
+	}
+
+	return strings.Join(filtered, " OR ")
 }
 
 // ReadIndexMd reads and parses the current index.md.
