@@ -63,8 +63,12 @@ Examples:
 				fmt.Printf(" (%s)", r.Type)
 			}
 			fmt.Printf(" [%s] ---\n", r.Path)
-			snippet := snippetFormatter(r.Snippet)
-			fmt.Printf("   %s\n\n", snippet)
+			snippet := snippetFormatter(wiki.CleanSnippet(r.Snippet))
+			if snippet != "" {
+				fmt.Printf("   %s\n\n", snippet)
+			} else {
+				fmt.Println()
+			}
 		}
 
 		return nil

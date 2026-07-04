@@ -92,17 +92,17 @@ func TestToFTS5OrQuery_MixedScript(t *testing.T) {
 		{
 			name:  "English and Chinese without space",
 			query: "golang垃圾回收",
-			want:  `"golang" OR "垃圾回收"`,
+			want:  `"golang" OR ("垃圾" OR "圾回" OR "回收")`,
 		},
 		{
 			name:  "English and Chinese with space",
 			query: "golang 垃圾回收",
-			want:  `"golang" OR "垃圾回收"`,
+			want:  `"golang" OR ("垃圾" OR "圾回" OR "回收")`,
 		},
 		{
 			name:  "Chinese only",
 			query: "垃圾回收",
-			want:  `"垃圾回收"`,
+			want:  `("垃圾" OR "圾回" OR "回收")`,
 		},
 		{
 			name:  "English only",
@@ -112,27 +112,32 @@ func TestToFTS5OrQuery_MixedScript(t *testing.T) {
 		{
 			name:  "Chinese then English without space",
 			query: "垃圾回收golang",
-			want:  `"垃圾回收" OR "golang"`,
+			want:  `("垃圾" OR "圾回" OR "回收") OR "golang"`,
 		},
 		{
 			name:  "Multiple script transitions",
 			query: "go垃圾回收runtime",
-			want:  `"go" OR "垃圾回收" OR "runtime"`,
+			want:  `"go" OR ("垃圾" OR "圾回" OR "回收") OR "runtime"`,
 		},
 		{
 			name:  "English Chinese English with spaces",
 			query: "go 垃圾回收 runtime",
-			want:  `"go" OR "垃圾回收" OR "runtime"`,
+			want:  `"go" OR ("垃圾" OR "圾回" OR "回收") OR "runtime"`,
 		},
 		{
 			name:  "Short tokens filtered out",
 			query: "a 垃圾回收 b",
-			want:  `"垃圾回收"`,
+			want:  `("垃圾" OR "圾回" OR "回收")`,
 		},
 		{
 			name:  "Punctuation as boundary",
 			query: "golang,垃圾回收",
-			want:  `"golang" OR "垃圾回收"`,
+			want:  `"golang" OR ("垃圾" OR "圾回" OR "回收")`,
+		},
+		{
+			name:  "CJK bigram for 2-char term",
+			query: "透明巨页 Go GC",
+			want:  `("透明" OR "明巨" OR "巨页") OR "Go" OR "GC"`,
 		},
 	}
 

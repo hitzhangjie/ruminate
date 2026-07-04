@@ -279,10 +279,10 @@ func (im *IndexManager) AddPage(page *Page) error {
 		return err
 	}
 
-	// Update FTS5 index
+	// Update FTS5 index with CJK bigram enrichment
 	_, err := im.db.Exec(
 		"INSERT INTO pages_fts (path, title, page_type, content) VALUES (?, ?, ?, ?)",
-		page.Path, page.Title, string(page.Type), page.Content,
+		page.Path, page.Title, string(page.Type), enrichContentWithBigrams(page.Content),
 	)
 	if err != nil {
 		return fmt.Errorf("inserting into FTS: %w", err)
@@ -301,7 +301,7 @@ func (im *IndexManager) AddRawSource(path, title, content string) error {
 
 	_, err := im.db.Exec(
 		"INSERT INTO pages_fts (path, title, page_type, content) VALUES (?, ?, ?, ?)",
-		path, title, "raw", content,
+		path, title, "raw", enrichContentWithBigrams(content),
 	)
 	if err != nil {
 		return fmt.Errorf("inserting raw source into FTS: %w", err)
@@ -324,7 +324,7 @@ func (im *IndexManager) UpdatePage(page *Page) error {
 
 	_, err = im.db.Exec(
 		"INSERT INTO pages_fts (path, title, page_type, content) VALUES (?, ?, ?, ?)",
-		page.Path, page.Title, string(page.Type), page.Content,
+		page.Path, page.Title, string(page.Type), enrichContentWithBigrams(page.Content),
 	)
 	if err != nil {
 		return fmt.Errorf("inserting into FTS: %w", err)
@@ -435,31 +435,16 @@ func (im *IndexManager) searchWithSnippets(query string, limit int) ([]SearchRes
 }
 
 // toFTS5OrQuery transforms a natural-language query into an OR-connected
-// FTS5 query. It splits on whitespace/punctuation and Unicode script
-// boundaries (e.g. Latin↔CJK), drops very short tokens, and joins with
-// " OR " so that matching ANY token is sufficient.
+// FTS5 query suitable for the OR-fallback search path.
 //
-// Splitting on script boundaries is essential for mixed-language queries
-// like "golang垃圾回收" (no space between English and Chinese). FTS5's
-// unicode61 tokenizer splits at script boundaries during indexing, so a
-// quoted phrase like "golang垃圾回收" would never match. By splitting into
-// "golang" OR "垃圾回收", each token can match independently.
+// It splits on whitespace/punctuation and Unicode script boundaries (e.g.
+// Latin↔CJK), filters very short tokens, and expands pure CJK terms into
+// overlapping bigrams so that FTS5 can match sub-phrases of indexed CJK
+// tokens.
+//
+// Example: "透明巨页 Go GC" → `("透明" OR "明巨" OR "巨页") OR "Go" OR "GC"`
 func toFTS5OrQuery(query string) string {
-	words := splitForFTS5Query(query)
-
-	var filtered []string
-	for _, w := range words {
-		// Keep tokens of at least 2 characters to avoid matching noise.
-		if len(w) >= 2 {
-			filtered = append(filtered, `"`+w+`"`)
-		}
-	}
-
-	if len(filtered) == 0 {
-		return ""
-	}
-
-	return strings.Join(filtered, " OR ")
+	return expandQueryCJKBigrams(query)
 }
 
 // splitForFTS5Query splits a query string into tokens mimicking FTS5's
@@ -509,6 +494,255 @@ func isCJK(r rune) bool {
 		unicode.Is(unicode.Hangul, r)
 }
 
+// bigramSeparator is placed between the original content and the CJK bigram
+// enrichment block. Search result rendering truncates snippets at this marker
+// to avoid showing raw bigram tokens to the user.
+const bigramSeparator = "\n\n<!-- bigram-index -->\n\n"
+
+// enrichContentWithBigrams appends overlapping CJK bigrams to content so that
+// FTS5's unicode61 tokenizer can match sub-phrases of CJK text. Without this,
+// a CJK run like "内存管理之透明巨页" is indexed as a single monolithic token,
+// making queries like "透明巨页" or "巨页" impossible to match.
+//
+// Bigrams are appended after an HTML comment separator so that snippet display
+// can truncate at the marker, keeping the output clean. Each unique bigram is
+// emitted once.
+func enrichContentWithBigrams(content string) string {
+	bigrams := extractCJKBigrams(content)
+	if len(bigrams) == 0 {
+		return content
+	}
+	return content + bigramSeparator + strings.Join(bigrams, " ")
+}
+
+// CleanSnippet removes CJK bigram index artifacts from FTS5 snippets and
+// suppresses snippets that contain only bigram soup (no useful context).
+//
+// The FTS5 snippet function may include text from the bigram enrichment block
+// (appended after "<!-- bigram-index -->"). When a match is found there, the
+// snippet shows raw bigram tokens without human-readable context.
+//
+// Returns the cleaned snippet, or an empty string if the snippet is just
+// bigram artifacts with no useful content.
+func CleanSnippet(snippet string) string {
+	// Truncate at the full separator marker
+	if idx := strings.Index(snippet, "<!-- bigram-index -->"); idx >= 0 {
+		snippet = strings.TrimSpace(snippet[:idx])
+	}
+
+	// Remove partial separator remnants (FTS5 may truncate "<!--" to "...")
+	snippet = strings.ReplaceAll(snippet, "bigram-index -->", "")
+	snippet = strings.ReplaceAll(snippet, "<!-- bigram-index", "")
+
+	// Clean up orphaned ellipsis, separator remnants, and whitespace.
+	// The FTS5 snippet may start with "...bigram-index -->\n\n" when the
+	// match is inside the bigram enrichment block.
+	snippet = strings.TrimLeft(snippet, ".- \n")
+	snippet = strings.TrimRight(snippet, ".- \n")
+
+	// Detect bigram soup: snippets that are purely CJK bigram tokens
+	// (2-char CJK sequences separated by spaces) with no Markdown formatting
+	// or meaningful structure. These come from matches in the bigram block.
+	if isBigramSoup(snippet) {
+		return ""
+	}
+
+	return strings.TrimSpace(snippet)
+}
+
+// isBigramSoup detects snippets that consist only of space-separated CJK
+// bigrams with no meaningful content markers (headings, links, bold, etc.).
+// FTS5 highlight tags (<b>, </b>) are stripped before checking since they
+// appear in every snippet with matches.
+func isBigramSoup(s string) bool {
+	// Strip FTS5 highlight tags before analysis
+	s = strings.ReplaceAll(s, "<b>", "")
+	s = strings.ReplaceAll(s, "</b>", "")
+
+	if len(s) < 6 {
+		return false
+	}
+
+	hasMeaningful := false
+	for _, r := range s {
+		if r == '#' || r == '*' || r == '[' || r == ']' ||
+			r == '(' || r == ')' || r == '`' || r == '\n' {
+			hasMeaningful = true
+			break
+		}
+		// ASCII letters indicate non-bigram content
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+			hasMeaningful = true
+			break
+		}
+	}
+
+	// If no markdown/ASCII markers and text is mostly CJK with spaces,
+	// it's likely bigram soup
+	if !hasMeaningful {
+		cjkCount := 0
+		spaceCount := 0
+		for _, r := range s {
+			if isCJK(r) {
+				cjkCount++
+			} else if r == ' ' {
+				spaceCount++
+			}
+		}
+		// Bigram soup pattern: lots of CJK characters with spaces between pairs
+		if cjkCount > 6 && spaceCount > 3 && cjkCount > spaceCount {
+			return true
+		}
+	}
+
+	return false
+}
+
+// extractCJKBigrams extracts all unique overlapping bigrams from CJK character
+// runs in the text. Non-CJK characters (spaces, punctuation, ASCII, etc.) are
+// treated as run boundaries and are not included in bigrams.
+//
+// Example: "Go垃圾回收机制" → ["垃圾", "圾回", "回收", "收机", "机制"]
+func extractCJKBigrams(text string) []string {
+	runes := []rune(text)
+	seen := make(map[string]bool)
+	var bigrams []string
+
+	i := 0
+	for i < len(runes) {
+		// Skip non-CJK characters
+		if !isCJK(runes[i]) {
+			i++
+			continue
+		}
+
+		// Found a CJK run — collect consecutive CJK runes
+		start := i
+		for i < len(runes) && isCJK(runes[i]) {
+			i++
+		}
+		end := i
+
+		// Generate overlapping bigrams from this CJK run
+		run := runes[start:end]
+		for j := 0; j < len(run)-1; j++ {
+			bg := string(run[j : j+2])
+			if !seen[bg] {
+				seen[bg] = true
+				bigrams = append(bigrams, bg)
+			}
+		}
+	}
+
+	return bigrams
+}
+
+// expandQueryCJKBigrams expands a query string by replacing CJK terms with
+// their constituent overlapping bigrams, joined by OR. Non-CJK terms are
+// kept as-is. This mirrors the bigram enrichment done at indexing time.
+//
+// Example: "透明巨页 Go GC" → `"透明" OR "明巨" OR "巨页" OR "Go" OR "GC"`
+func expandQueryCJKBigrams(query string) string {
+	words := splitForFTS5Query(query)
+	if len(words) == 0 {
+		return query
+	}
+
+	var parts []string
+	for _, word := range words {
+		runes := []rune(word)
+		// Only expand pure CJK words that are at least 2 characters.
+		// Non-CJK words (or words already shorter than 2 CJK chars) stay as-is.
+		allCJK := true
+		for _, r := range runes {
+			if !isCJK(r) {
+				allCJK = false
+				break
+			}
+		}
+
+		if allCJK && len(runes) >= 2 {
+			// Generate overlapping bigrams
+			bgSeen := make(map[string]bool)
+			var bgParts []string
+			for j := 0; j < len(runes)-1; j++ {
+				bg := string(runes[j : j+2])
+				if !bgSeen[bg] {
+					bgSeen[bg] = true
+					bgParts = append(bgParts, `"`+bg+`"`)
+				}
+			}
+			if len(bgParts) == 1 {
+				parts = append(parts, bgParts[0])
+			} else {
+				parts = append(parts, "("+strings.Join(bgParts, " OR ")+")")
+			}
+		} else if len(runes) >= 2 {
+			// Non-CJK token: keep as-is, but only if >= 2 chars to avoid noise
+			parts = append(parts, `"`+word+`"`)
+		}
+		// Tokens shorter than 2 characters are silently dropped
+	}
+
+	if len(parts) == 0 {
+		return query
+	}
+	return strings.Join(parts, " OR ")
+}
+
+// toFTS5AndQuery builds an AND-oriented FTS5 query that expands pure CJK terms
+// into bigram OR-groups while preserving AND semantics between terms.
+//
+// Example: "透明巨页 Go GC" → `("透明" OR "明巨" OR "巨页") go gc`
+//
+// This ensures CJK sub-phrases can match (via bigrams) while non-CJK terms
+// still require exact matching. The result is a more precise AND query than
+// the default unicode61 tokenization which treats CJK runs as single tokens.
+func toFTS5AndQuery(query string) string {
+	words := splitForFTS5Query(query)
+	if len(words) == 0 {
+		return query
+	}
+
+	var parts []string
+	for _, word := range words {
+		runes := []rune(word)
+		allCJK := true
+		for _, r := range runes {
+			if !isCJK(r) {
+				allCJK = false
+				break
+			}
+		}
+
+		if allCJK && len(runes) >= 2 {
+			bgSeen := make(map[string]bool)
+			var bgParts []string
+			for j := 0; j < len(runes)-1; j++ {
+				bg := string(runes[j : j+2])
+				if !bgSeen[bg] {
+					bgSeen[bg] = true
+					bgParts = append(bgParts, `"`+bg+`"`)
+				}
+			}
+			if len(bgParts) == 1 {
+				parts = append(parts, bgParts[0])
+			} else {
+				parts = append(parts, "("+strings.Join(bgParts, " OR ")+")")
+			}
+		} else if len(runes) >= 2 {
+			parts = append(parts, `"`+word+`"`)
+		}
+		// Drop very short tokens
+	}
+
+	if len(parts) == 0 {
+		return query
+	}
+	// Space-separated = AND semantics in FTS5
+	return strings.Join(parts, " ")
+}
+
 // ReadIndexMd reads and parses the current index.md.
 func (im *IndexManager) ReadIndexMd() ([]IndexEntry, error) {
 	content, err := os.ReadFile(im.indexPath)
@@ -527,6 +761,32 @@ func (im *IndexManager) Close() error {
 	if im.db != nil {
 		return im.db.Close()
 	}
+	return nil
+}
+
+// ReindexContent deletes the existing FTS entry for path and re-inserts it
+// with CJK bigram enrichment. This is used to migrate existing content when
+// the CJK bigram feature is introduced.
+func (im *IndexManager) ReindexContent(path, title, pageType, content string) error {
+	if err := im.open(); err != nil {
+		return err
+	}
+
+	// Delete old entry
+	_, err := im.db.Exec("DELETE FROM pages_fts WHERE path = ?", path)
+	if err != nil {
+		return fmt.Errorf("deleting old FTS entry for reindex: %w", err)
+	}
+
+	// Re-insert with bigram enrichment
+	_, err = im.db.Exec(
+		"INSERT INTO pages_fts (path, title, page_type, content) VALUES (?, ?, ?, ?)",
+		path, title, pageType, enrichContentWithBigrams(content),
+	)
+	if err != nil {
+		return fmt.Errorf("re-inserting FTS entry: %w", err)
+	}
+
 	return nil
 }
 

@@ -39,12 +39,12 @@ type Page struct {
 
 // Manager handles wiki page CRUD and directory structure.
 type Manager struct {
-	root        string               // wiki root directory path
-	wikiDir     string               // wiki/ subdirectory
-	rawDir      string               // raw/ subdirectory
-	git         *gitwrap.Git         // git wrapper for version control
-	index       *IndexManager        // index manager
-	log         *LogManager          // log manager
+	root        string                // wiki root directory path
+	wikiDir     string                // wiki/ subdirectory
+	rawDir      string                // raw/ subdirectory
+	git         *gitwrap.Git          // git wrapper for version control
+	index       *IndexManager         // index manager
+	log         *LogManager           // log manager
 	embedder    llm.EmbeddingProvider // optional embedding provider for semantic search
 	llmProvider llm.LLMProvider       // LLM provider for inference
 	llmCfg      config.LLMConfig      // LLM configuration
@@ -527,23 +527,20 @@ func (m *Manager) Search(ctx context.Context, query string, topN int) ([]SearchR
 
 // hybridSearch implements vector-first hybrid retrieval.
 //
-// Strategy (tiered fallback):
+// Strategy (vector-first, FTS as precision booster):
 //  1. Vector search is the primary signal — it handles semantics, synonyms,
 //     and cross-language queries that FTS5 cannot.
-//  2. FTS5 AND acts as a precision booster: when the user's query contains
-//     exact keywords in the index, FTS results receive RRF scores and
-//     surface high-precision matches to the top.
-//  3. FTS5 OR acts as a secondary booster: when AND is too strict (e.g.
-//     mixed-language queries without spaces, rare tokens), OR provides
-//     keyword grounding so the RRF fusion isn't driven by vector alone.
-//     Without this, vector-only would return ALL pages weakly sorted by
-//     cosine similarity — noise that the LLM cannot use.
+//  2. FTS5 AND acts as a precision booster: vector results that also match
+//     FTS keywords are boosted above non-matching vector results. A small
+//     number of FTS-only results are appended at the end for discovery.
+//     Only the top few FTS results are used — just enough to boost precision,
+//     not overwhelm the vector ranking.
+//  3. FTS5 OR acts as a secondary booster: when AND is too strict, OR
+//     provides keyword grounding.
 //  4. Vector-only: only when both FTS strategies return nothing.
 //  5. If vector search fails entirely (embedder down, no vectors indexed),
 //     we fall back to the full FTS pipeline (AND → OR).
 func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]SearchResult, error) {
-	subLimit := topN * 2
-
 	// Step 1: Vector search (primary signal)
 	queryVec, embErr := m.embedder.EmbedQuery(ctx, query)
 	if embErr != nil {
@@ -551,24 +548,25 @@ func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]S
 		return m.ftsWithFallback(query, topN)
 	}
 
-	vecResults, _ := m.index.SearchByVector(queryVec, subLimit)
+	vecResults, _ := m.index.SearchByVector(queryVec, topN*2)
 	if len(vecResults) == 0 {
 		// No vector matches (e.g. empty index) → FTS fallback
 		return m.ftsWithFallback(query, topN)
 	}
 
-	// Step 2: FTS AND as precision booster
-	ftsResults, ftsErr := m.index.SearchWithSnippets(query, subLimit)
-	if ftsErr == nil && len(ftsResults) > 0 {
-		return rrfFuse(ftsResults, vecResults, topN), nil
+	// Step 2: FTS AND as precision booster — use a small candidate pool
+	// (5 results) so keyword matches boost precision without overwhelming
+	// the semantic ranking from vector search.
+	if andQuery := toFTS5AndQuery(query); andQuery != "" {
+		ftsResults, ftsErr := m.index.searchWithSnippets(andQuery, 5)
+		if ftsErr == nil && len(ftsResults) > 0 {
+			return rrfFuse(ftsResults, vecResults, topN), nil
+		}
 	}
 
 	// Step 3: FTS AND returned nothing — try OR as secondary booster.
-	// This provides keyword grounding for mixed-language queries and
-	// queries with rare tokens that AND would drop.
-	orQuery := toFTS5OrQuery(query)
-	if orQuery != "" {
-		orResults, err := m.index.searchWithSnippets(orQuery, subLimit)
+	if orQuery := toFTS5OrQuery(query); orQuery != "" {
+		orResults, err := m.index.searchWithSnippets(orQuery, 5)
 		if err == nil && len(orResults) > 0 {
 			return rrfFuse(orResults, vecResults, topN), nil
 		}
@@ -582,11 +580,14 @@ func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]S
 	return vecResults[:n], nil
 }
 
-// ftsWithFallback performs FTS5 AND search, falling back to OR if AND
-// returns nothing. This is used when no embedder is available, or as the
-// last-resort fallback when vector search fails in hybrid mode.
+// ftsWithFallback performs FTS5 AND search with CJK bigram expansion,
+// falling back to OR if AND returns nothing. This is used when no embedder
+// is available, or as the last-resort fallback when vector search fails in
+// hybrid mode.
 func (m *Manager) ftsWithFallback(query string, topN int) ([]SearchResult, error) {
-	results, err := m.index.SearchWithSnippets(query, topN)
+	// Use bigram-expanded AND query for better CJK matching
+	andQuery := toFTS5AndQuery(query)
+	results, err := m.index.searchWithSnippets(andQuery, topN)
 	if err != nil {
 		return nil, err
 	}
@@ -701,6 +702,42 @@ func sanitizeFilename(title string) string {
 		"|", "-",
 	)
 	return replacer.Replace(title)
+}
+
+// Reindex rebuilds all FTS entries with CJK bigram enrichment. This is needed
+// when upgrading from a version that did not have CJK bigram support.
+func (m *Manager) Reindex() error {
+	m.ensureComponents()
+
+	// Reindex wiki pages
+	pages, err := m.List("")
+	if err != nil {
+		return fmt.Errorf("listing pages: %w", err)
+	}
+	for _, p := range pages {
+		if err := m.index.ReindexContent(p.Path, p.Title, string(p.Type), p.Content); err != nil {
+			return fmt.Errorf("reindexing page %s: %w", p.Path, err)
+		}
+	}
+
+	// Reindex raw sources
+	sources, err := m.ListSources("")
+	if err != nil {
+		return fmt.Errorf("listing sources: %w", err)
+	}
+	for _, relPath := range sources {
+		fullPath := filepath.Join(m.root, relPath)
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			return fmt.Errorf("reading raw source %s: %w", relPath, err)
+		}
+		title := strings.TrimSuffix(filepath.Base(relPath), ".md")
+		if err := m.index.ReindexContent(relPath, title, "raw", string(content)); err != nil {
+			return fmt.Errorf("reindexing raw source %s: %w", relPath, err)
+		}
+	}
+
+	return nil
 }
 
 // defaultSchema is the default content for schema.md.
