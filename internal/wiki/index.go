@@ -195,6 +195,22 @@ func (im *IndexManager) DeleteVector(path string) error {
 // SearchByVector performs brute-force cosine similarity search over all
 // stored embeddings and returns the top-N matching pages.
 func (im *IndexManager) SearchByVector(queryVec []float32, limit int) ([]SearchResult, error) {
+	scored, err := im.searchByVectorWithMeta(queryVec, limit)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]SearchResult, len(scored))
+	for i, s := range scored {
+		results[i] = s.SearchResult
+	}
+	return results, nil
+}
+
+// searchByVectorWithMeta performs brute-force cosine similarity search and
+// returns results with their embedding vectors and similarity scores preserved.
+// This is used by the MMR diversification step which needs document vectors
+// for document-document similarity computation.
+func (im *IndexManager) searchByVectorWithMeta(queryVec []float32, limit int) ([]scoredResult, error) {
 	if err := im.open(); err != nil {
 		return nil, err
 	}
@@ -209,11 +225,7 @@ func (im *IndexManager) SearchByVector(queryVec []float32, limit int) ([]SearchR
 	}
 	defer rows.Close()
 
-	type scored struct {
-		SearchResult
-		score float32
-	}
-	var scoredList []scored
+	var scoredList []scoredResult
 
 	for rows.Next() {
 		var path, title, pageType string
@@ -226,7 +238,7 @@ func (im *IndexManager) SearchByVector(queryVec []float32, limit int) ([]SearchR
 			continue // skip corrupted vectors
 		}
 		sim := cosineSimilarity(queryVec, vec)
-		scoredList = append(scoredList, scored{
+		scoredList = append(scoredList, scoredResult{
 			SearchResult: SearchResult{
 				IndexEntry: IndexEntry{
 					Path:  path,
@@ -234,7 +246,8 @@ func (im *IndexManager) SearchByVector(queryVec []float32, limit int) ([]SearchR
 					Type:  PageType(pageType),
 				},
 			},
-			score: sim,
+			vector: vec,
+			score:  float64(sim),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -249,12 +262,7 @@ func (im *IndexManager) SearchByVector(queryVec []float32, limit int) ([]SearchR
 	if limit > len(scoredList) {
 		limit = len(scoredList)
 	}
-	results := make([]SearchResult, limit)
-	for i := 0; i < limit; i++ {
-		results[i] = scoredList[i].SearchResult
-	}
-
-	return results, nil
+	return scoredList[:limit], nil
 }
 
 // open opens the SQLite database if not already open.
@@ -383,6 +391,15 @@ type SearchResult struct {
 	IndexEntry
 	Snippet string  // highlighted snippet from FTS5 snippet()
 	Rank    float64 // BM25 rank score (lower = more relevant)
+}
+
+// scoredResult is an internal type that carries the embedding vector and
+// cosine similarity score alongside the SearchResult. Used by the MMR
+// diversification step.
+type scoredResult struct {
+	SearchResult
+	vector []float32 // embedding vector for document-document similarity
+	score  float64   // cosine similarity to query (higher = more relevant)
 }
 
 // SearchWithSnippets performs a full-text search using FTS5 AND semantics and

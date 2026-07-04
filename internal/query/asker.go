@@ -12,7 +12,7 @@ import (
 // AskOptions controls AI question-answering behavior.
 type AskOptions struct {
 	// TopN is the number of top search results to use as context.
-	// Default: 5.
+	// Default: DefaultTopN (20).
 	TopN int
 
 	// Save controls whether to write the Q&A result back as a wiki page.
@@ -46,10 +46,12 @@ type AskChunk struct {
 	Sources []Source // populated on the final chunk (Done=true, Error=nil)
 }
 
+const DefaultTopN = 20
+
 // Ask sends a question to the LLM with relevant wiki pages as context and
 // returns the synthesized answer with source citations.
 func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*AskResult, error) {
-	topN := 5
+	topN := DefaultTopN
 	save := false
 	if opts != nil {
 		if opts.TopN > 0 {
@@ -115,7 +117,7 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 //	    fmt.Print(chunk.Content)
 //	}
 func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOptions) (<-chan AskChunk, error) {
-	topN := 5
+	topN := DefaultTopN
 	save := false
 	if opts != nil {
 		if opts.TopN > 0 {

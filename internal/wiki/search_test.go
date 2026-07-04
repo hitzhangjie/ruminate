@@ -8,33 +8,34 @@ func TestRRFFuse_Normal(t *testing.T) {
 	fts := []SearchResult{
 		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}},
 		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}},
-		{IndexEntry: IndexEntry{Path: "c.md", Title: "C"}},
+		{IndexEntry: IndexEntry{Path: "x.md", Title: "X"}}, // FTS-only → excluded
 	}
 	vec := []SearchResult{
-		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}}, // appears in both lists
+		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}}, // also in FTS → boosted
 		{IndexEntry: IndexEntry{Path: "d.md", Title: "D"}},
-		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}}, // appears in both lists
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}}, // also in FTS → boosted
 	}
 
-	// FTS ranks: A=1, B=2, C=3
+	// FTS ranks: A=1, B=2 (X is FTS-only, excluded from scoring)
 	// Vec ranks: B=1, D=2, A=3
-	// RRF scores:
-	// A: 1/(60+1) + 1/(60+3) = 0.01639 + 0.01587 = 0.03226
-	// B: 1/(60+2) + 1/(60+1) = 0.01613 + 0.01639 = 0.03252  ← highest
-	// C: 1/(60+3) + 0          = 0.01587
-	// D: 0          + 1/(60+2) = 0.01613
+	// RRF scores (k=60):
+	//   B: 1/(60+1) + 1/(60+2) = 0.01639 + 0.01613 = 0.03252 ← highest (boosted by FTS #2)
+	//   A: 1/(60+3) + 1/(60+1) = 0.01587 + 0.01639 = 0.03226 ← boosted by FTS #1
+	//   D: 1/(60+2) + 0          = 0.01613                   ← not in FTS
+	// Expected order: B > A > D (x.md excluded — FTS-only)
 
-	got := rrfFuse(fts, vec, 4)
-	if len(got) != 4 {
-		t.Fatalf("expected 4 results, got %d", len(got))
+	got := rrfFuse(fts, vec, 5)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 results (FTS-only excluded), got %d", len(got))
 	}
-	// B should be first (highest RRF score)
 	if got[0].Path != "b.md" {
 		t.Errorf("expected B first (RRF 0.03252), got %s", got[0].Path)
 	}
-	// C should be last (lowest RRF score)
-	if got[3].Path != "c.md" && got[3].Path != "d.md" {
-		t.Errorf("expected C or D last, got %s", got[3].Path)
+	if got[1].Path != "a.md" {
+		t.Errorf("expected A second (RRF 0.03226), got %s", got[1].Path)
+	}
+	if got[2].Path != "d.md" {
+		t.Errorf("expected D third (RRF 0.01613), got %s", got[2].Path)
 	}
 }
 
@@ -44,7 +45,9 @@ func TestRRFFuse_Limit(t *testing.T) {
 		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}},
 	}
 	vec := []SearchResult{
+		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}}, // boosted by FTS
 		{IndexEntry: IndexEntry{Path: "c.md", Title: "C"}},
+		{IndexEntry: IndexEntry{Path: "b.md", Title: "B"}}, // boosted by FTS
 	}
 
 	got := rrfFuse(fts, vec, 2)
@@ -66,13 +69,14 @@ func TestRRFFuse_EmptyFTS(t *testing.T) {
 }
 
 func TestRRFFuse_EmptyVector(t *testing.T) {
+	// FTS-only results are never included — empty vector means empty output.
 	fts := []SearchResult{
 		{IndexEntry: IndexEntry{Path: "a.md", Title: "A"}},
 	}
 
 	got := rrfFuse(fts, nil, 5)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 result from FTS-only, got %d", len(got))
+	if len(got) != 0 {
+		t.Fatalf("expected 0 results (FTS-only not allowed), got %d", len(got))
 	}
 }
 

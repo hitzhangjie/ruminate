@@ -525,59 +525,81 @@ func (m *Manager) Search(ctx context.Context, query string, topN int) ([]SearchR
 	return m.ftsWithFallback(query, topN)
 }
 
-// hybridSearch implements vector-first hybrid retrieval.
+// hybridSearch implements vector-first hybrid retrieval with MMR diversity.
 //
-// Strategy (vector-first, FTS as precision booster):
-//  1. Vector search is the primary signal — it handles semantics, synonyms,
-//     and cross-language queries that FTS5 cannot.
-//  2. FTS5 AND acts as a precision booster: vector results that also match
-//     FTS keywords are boosted above non-matching vector results. A small
-//     number of FTS-only results are appended at the end for discovery.
-//     Only the top few FTS results are used — just enough to boost precision,
-//     not overwhelm the vector ranking.
-//  3. FTS5 OR acts as a secondary booster: when AND is too strict, OR
-//     provides keyword grounding.
-//  4. Vector-only: only when both FTS strategies return nothing.
-//  5. If vector search fails entirely (embedder down, no vectors indexed),
+// Strategy (vector-first, FTS as pure booster, MMR diversity):
+//  1. Vector search retrieves a fixed large recall pool (200) with embedding
+//     vectors and similarity scores preserved. The pool size is independent
+//     of topN to ensure minority-relevant content (e.g. THP docs) is included.
+//  2. FTS5 AND acts as a precision booster via RRF: vector results that also
+//     match FTS keywords receive a score bonus. FTS-only results are never
+//     introduced as independent candidates.
+//  3. FTS5 OR acts as a secondary booster when AND is too strict.
+//  4. MMR diversity (λ=0.5, target=50): from the fused pool, iteratively
+//     select results that are both relevant to the query AND diverse from
+//     already-selected results. The MMR target is fixed at 50 (independent of
+//     topN) to give the algorithm enough rounds for the diversity penalty to
+//     accumulate — minority-relevant clusters (e.g. THP) get picked after the
+//     dominant cluster (e.g. GC) saturates. λ=0.5 balances relevance and
+//     diversity equally.
+//  5. Truncate to topN: the caller's budget for LLM context. topN only
+//     controls how many of the diverse results are returned, not how many
+//     MMR selects.
+//  6. If vector search fails entirely (embedder down, no vectors indexed),
 //     we fall back to the full FTS pipeline (AND → OR).
 func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]SearchResult, error) {
-	// Step 1: Vector search (primary signal)
+	// Step 1: Vector search with large fixed recall pool.
+	// 200 is enough to cover multiple semantic clusters even when one
+	// dominates the relevance ranking (e.g. 100+ GC pages before THP pages).
 	queryVec, embErr := m.embedder.EmbedQuery(ctx, query)
 	if embErr != nil {
-		// Embedder unavailable → full FTS fallback
 		return m.ftsWithFallback(query, topN)
 	}
 
-	vecResults, _ := m.index.SearchByVector(queryVec, topN*2)
-	if len(vecResults) == 0 {
-		// No vector matches (e.g. empty index) → FTS fallback
+	const recallSize = 200
+	scoredResults, _ := m.index.searchByVectorWithMeta(queryVec, recallSize)
+	if len(scoredResults) == 0 {
 		return m.ftsWithFallback(query, topN)
 	}
 
-	// Step 2: FTS AND as precision booster — use a small candidate pool
-	// (5 results) so keyword matches boost precision without overwhelming
-	// the semantic ranking from vector search.
+	// Step 2: FTS AND as precision booster — boost vector results that
+	// also match FTS keywords via RRF. Keep the full fused pool for MMR.
+	ftsBoosted := false
 	if andQuery := toFTS5AndQuery(query); andQuery != "" {
 		ftsResults, ftsErr := m.index.searchWithSnippets(andQuery, 5)
 		if ftsErr == nil && len(ftsResults) > 0 {
-			return rrfFuse(ftsResults, vecResults, topN), nil
+			scoredResults = rrfFuseFull(ftsResults, scoredResults)
+			ftsBoosted = true
 		}
 	}
 
 	// Step 3: FTS AND returned nothing — try OR as secondary booster.
-	if orQuery := toFTS5OrQuery(query); orQuery != "" {
-		orResults, err := m.index.searchWithSnippets(orQuery, 5)
-		if err == nil && len(orResults) > 0 {
-			return rrfFuse(orResults, vecResults, topN), nil
+	if !ftsBoosted {
+		if orQuery := toFTS5OrQuery(query); orQuery != "" {
+			orResults, err := m.index.searchWithSnippets(orQuery, 5)
+			if err == nil && len(orResults) > 0 {
+				scoredResults = rrfFuseFull(orResults, scoredResults)
+			}
 		}
 	}
 
-	// Step 4: Neither FTS strategy contributed — vector-only
-	n := topN
-	if n > len(vecResults) {
-		n = len(vecResults)
+	// Step 4: MMR diversity — select a diverse pool from the fused candidates.
+	// The MMR target (50) is independent of topN: MMR needs enough rounds for
+	// the diversity penalty to accumulate, so minority-relevant clusters
+	// (e.g. THP) get selected before the truncation to topN.
+	// λ=0.5 balances relevance and diversity equally.
+	const mmrTarget = 50
+	mmrN := mmrTarget
+	if mmrN > len(scoredResults) {
+		mmrN = len(scoredResults)
 	}
-	return vecResults[:n], nil
+	diverse := mmrDiversify(queryVec, scoredResults, 0.5, mmrN)
+
+	// Step 5: Truncate to topN — the caller's LLM context budget.
+	if topN < len(diverse) {
+		return diverse[:topN], nil
+	}
+	return diverse, nil
 }
 
 // ftsWithFallback performs FTS5 AND search with CJK bigram expansion,
@@ -603,24 +625,37 @@ func (m *Manager) ftsWithFallback(query string, topN int) ([]SearchResult, error
 	return results, nil
 }
 
-// rrfFuse fuses two ranked result lists using Reciprocal Rank Fusion (k=60).
-// Results are deduplicated by path and sorted by descending RRF score.
+// rrfFuse uses Reciprocal Rank Fusion (k=60) to boost vector search results
+// with FTS keyword matches. FTS acts as a pure booster: only pages that already
+// appear in vector results receive an FTS score bonus. FTS-only candidates are
+// never introduced — this prevents keyword matches from displacing semantically
+// relevant pages that happen to use different terminology.
 func rrfFuse(ftsResults, vecResults []SearchResult, limit int) []SearchResult {
 	const k = 60
+
+	// Build set of vector paths — only these can appear in the final output.
+	vecPaths := make(map[string]bool, len(vecResults))
+	for _, r := range vecResults {
+		vecPaths[r.Path] = true
+	}
 
 	score := make(map[string]float64)
 	result := make(map[string]SearchResult)
 
-	for i, r := range ftsResults {
+	// Vector results always contribute their RRF score.
+	for i, r := range vecResults {
 		score[r.Path] += 1.0 / (k + float64(i+1))
 		if _, exists := result[r.Path]; !exists {
 			result[r.Path] = r
 		}
 	}
-	for i, r := range vecResults {
-		score[r.Path] += 1.0 / (k + float64(i+1))
-		if _, exists := result[r.Path]; !exists {
-			result[r.Path] = r
+
+	// FTS only boosts pages already found by vector search.
+	// FTS-only pages are NOT added as independent candidates.
+	for i, r := range ftsResults {
+		if vecPaths[r.Path] {
+			score[r.Path] += 1.0 / (k + float64(i+1))
+			// Keep the vector result metadata (title, snippet may differ).
 		}
 	}
 
@@ -644,6 +679,47 @@ func rrfFuse(ftsResults, vecResults []SearchResult, limit int) []SearchResult {
 	for i := 0; i < limit; i++ {
 		out[i] = list[i].SearchResult
 	}
+	return out
+}
+
+// rrfFuseFull is like rrfFuse but returns the full fused pool (no truncation)
+// with score metadata preserved for downstream MMR diversification.
+// FTS acts as pure booster: only pages already in vecResults get an FTS bonus.
+func rrfFuseFull(ftsResults []SearchResult, vecResults []scoredResult) []scoredResult {
+	const k = 60
+
+	// Build set of vector paths and index for ranking.
+	vecPaths := make(map[string]bool, len(vecResults))
+	for _, r := range vecResults {
+		vecPaths[r.Path] = true
+	}
+
+	// Compute RRF scores. Start with vector score as base.
+	rrfScore := make(map[string]float64)
+	for i, r := range vecResults {
+		rrfScore[r.Path] = 1.0 / (k + float64(i+1))
+	}
+
+	// FTS boosts vector results that also match keywords.
+	for i, r := range ftsResults {
+		if vecPaths[r.Path] {
+			rrfScore[r.Path] += 1.0 / (k + float64(i+1))
+		}
+	}
+
+	// Build output: each vecResult gets its RRF score. FTS-only entries
+	// are excluded (same as rrfFuse semantics).
+	out := make([]scoredResult, len(vecResults))
+	for i, r := range vecResults {
+		out[i] = r
+		out[i].score = rrfScore[r.Path] // replace cosine score with RRF score
+	}
+
+	// Sort by descending RRF score
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].score > out[j].score
+	})
+
 	return out
 }
 

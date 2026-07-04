@@ -77,7 +77,7 @@ Examples:
 func init() {
 	askCmd.Flags().BoolVar(&askSave, "save", false, "Save the Q&A result as a wiki synthesis page")
 	askCmd.Flags().BoolVar(&askNoStream, "no-stream", false, "Disable streaming output (wait for full answer)")
-	askCmd.Flags().IntVarP(&askTopN, "top-n", "n", 5, "Number of top search results to use as context")
+	askCmd.Flags().IntVarP(&askTopN, "top-n", "n", query.DefaultTopN, "Number of diverse search results to use as LLM context")
 }
 
 // runAskNonStream performs a blocking ask and prints the full answer at once.
