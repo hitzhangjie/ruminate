@@ -83,6 +83,130 @@ func TestRRFFuse_EmptyBoth(t *testing.T) {
 	}
 }
 
+func TestToFTS5OrQuery_MixedScript(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{
+			name:  "English and Chinese without space",
+			query: "golang垃圾回收",
+			want:  `"golang" OR "垃圾回收"`,
+		},
+		{
+			name:  "English and Chinese with space",
+			query: "golang 垃圾回收",
+			want:  `"golang" OR "垃圾回收"`,
+		},
+		{
+			name:  "Chinese only",
+			query: "垃圾回收",
+			want:  `"垃圾回收"`,
+		},
+		{
+			name:  "English only",
+			query: "golang",
+			want:  `"golang"`,
+		},
+		{
+			name:  "Chinese then English without space",
+			query: "垃圾回收golang",
+			want:  `"垃圾回收" OR "golang"`,
+		},
+		{
+			name:  "Multiple script transitions",
+			query: "go垃圾回收runtime",
+			want:  `"go" OR "垃圾回收" OR "runtime"`,
+		},
+		{
+			name:  "English Chinese English with spaces",
+			query: "go 垃圾回收 runtime",
+			want:  `"go" OR "垃圾回收" OR "runtime"`,
+		},
+		{
+			name:  "Short tokens filtered out",
+			query: "a 垃圾回收 b",
+			want:  `"垃圾回收"`,
+		},
+		{
+			name:  "Punctuation as boundary",
+			query: "golang,垃圾回收",
+			want:  `"golang" OR "垃圾回收"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toFTS5OrQuery(tt.query)
+			if got != tt.want {
+				t.Errorf("toFTS5OrQuery(%q) = %q, want %q", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitForFTS5Query(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{
+			name:  "English and Chinese without space",
+			query: "golang垃圾回收",
+			want:  []string{"golang", "垃圾回收"},
+		},
+		{
+			name:  "Chinese and English without space",
+			query: "垃圾回收golang",
+			want:  []string{"垃圾回收", "golang"},
+		},
+		{
+			name:  "Multiple transitions",
+			query: "go垃圾回收runtime",
+			want:  []string{"go", "垃圾回收", "runtime"},
+		},
+		{
+			name:  "With spaces",
+			query: "golang 垃圾回收",
+			want:  []string{"golang", "垃圾回收"},
+		},
+		{
+			name:  "Chinese only",
+			query: "垃圾回收",
+			want:  []string{"垃圾回收"},
+		},
+		{
+			name:  "English only",
+			query: "golang",
+			want:  []string{"golang"},
+		},
+		{
+			name:  "With punctuation",
+			query: "golang,垃圾回收",
+			want:  []string{"golang", "垃圾回收"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitForFTS5Query(tt.query)
+			if len(got) != len(tt.want) {
+				t.Errorf("splitForFTS5Query(%q) = %v (len=%d), want %v (len=%d)",
+					tt.query, got, len(got), tt.want, len(tt.want))
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("splitForFTS5Query(%q)[%d] = %q, want %q",
+						tt.query, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestRRFFuse_Deduplication(t *testing.T) {
 	// Same path appears in both lists — should appear once in output
 	fts := []SearchResult{

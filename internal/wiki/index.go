@@ -385,8 +385,12 @@ type SearchResult struct {
 	Rank    float64 // BM25 rank score (lower = more relevant)
 }
 
-// SearchWithSnippets performs a full-text search and returns results with
-// highlighted snippets using FTS5's snippet() function.
+// SearchWithSnippets performs a full-text search using FTS5 AND semantics and
+// returns results with highlighted snippets via FTS5's snippet() function.
+//
+// It uses the query as-is — FTS5's unicode61 tokenizer applies implicit AND
+// between terms. Callers that need OR fallback should call searchWithSnippets
+// with a query built by toFTS5OrQuery.
 //
 // The snippet function wraps matching terms in <b>...</b> tags. The caller
 // can render these as ANSI-bold for terminal output or HTML for web display.
@@ -395,25 +399,7 @@ func (im *IndexManager) SearchWithSnippets(query string, limit int) ([]SearchRes
 		return nil, err
 	}
 
-	// First attempt: use the query as-is (FTS5 uses implicit AND between terms).
-	results, err := im.searchWithSnippets(query, limit)
-	if err != nil {
-		return nil, err
-	}
-
-	// Fallback: if AND semantics yield no results, broaden to OR so a single
-	// rare token (e.g. "2026") doesn't kill the entire query.
-	if len(results) == 0 {
-		orQuery := toFTS5OrQuery(query)
-		if orQuery != "" {
-			results, err = im.searchWithSnippets(orQuery, limit)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	return results, nil
+	return im.searchWithSnippets(query, limit)
 }
 
 // searchWithSnippets is the internal implementation that executes the FTS5 query.
@@ -449,12 +435,17 @@ func (im *IndexManager) searchWithSnippets(query string, limit int) ([]SearchRes
 }
 
 // toFTS5OrQuery transforms a natural-language query into an OR-connected
-// FTS5 query. It splits on whitespace/punctuation, drops very short tokens,
-// and joins with " OR " so that matching ANY token is sufficient.
+// FTS5 query. It splits on whitespace/punctuation and Unicode script
+// boundaries (e.g. Latin↔CJK), drops very short tokens, and joins with
+// " OR " so that matching ANY token is sufficient.
+//
+// Splitting on script boundaries is essential for mixed-language queries
+// like "golang垃圾回收" (no space between English and Chinese). FTS5's
+// unicode61 tokenizer splits at script boundaries during indexing, so a
+// quoted phrase like "golang垃圾回收" would never match. By splitting into
+// "golang" OR "垃圾回收", each token can match independently.
 func toFTS5OrQuery(query string) string {
-	words := strings.FieldsFunc(query, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsPunct(r)
-	})
+	words := splitForFTS5Query(query)
 
 	var filtered []string
 	for _, w := range words {
@@ -469,6 +460,53 @@ func toFTS5OrQuery(query string) string {
 	}
 
 	return strings.Join(filtered, " OR ")
+}
+
+// splitForFTS5Query splits a query string into tokens mimicking FTS5's
+// unicode61 tokenizer behavior: it splits on whitespace, punctuation,
+// and at script boundaries between CJK and non-CJK characters.
+func splitForFTS5Query(query string) []string {
+	var words []string
+	var current []rune
+	var inCJK bool
+	var hasRunes bool
+
+	flush := func() {
+		if hasRunes {
+			words = append(words, string(current))
+			current = nil
+			hasRunes = false
+		}
+	}
+
+	for _, r := range query {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) {
+			flush()
+			inCJK = false
+			continue
+		}
+
+		runeIsCJK := isCJK(r)
+		if hasRunes && runeIsCJK != inCJK {
+			flush()
+		}
+
+		inCJK = runeIsCJK
+		hasRunes = true
+		current = append(current, r)
+	}
+
+	flush()
+
+	return words
+}
+
+// isCJK reports whether r is a CJK character (Han, Hiragana, Katakana, or Hangul).
+func isCJK(r rune) bool {
+	return unicode.Is(unicode.Han, r) ||
+		unicode.Is(unicode.Hiragana, r) ||
+		unicode.Is(unicode.Katakana, r) ||
+		unicode.Is(unicode.Hangul, r)
 }
 
 // ReadIndexMd reads and parses the current index.md.

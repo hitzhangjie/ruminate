@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	askSave    bool
+	askSave     bool
 	askNoStream bool
-	askTopN    int
+	askTopN     int
 )
 
 var askCmd = &cobra.Command{
@@ -51,8 +51,8 @@ Examples:
 		}
 
 		opts := &query.AskOptions{
-			TopN:    askTopN,
-			Save:    askSave,
+			TopN:     askTopN,
+			Save:     askSave,
 			NoStream: askNoStream,
 		}
 
@@ -118,16 +118,25 @@ func runAskStream(ctx context.Context, engine *query.Engine, question string, op
 		return fmt.Errorf("ask stream failed: %w", err)
 	}
 
+	var sources []query.Source
 	for chunk := range ch {
 		if chunk.Error != nil {
 			return fmt.Errorf("stream error: %w", chunk.Error)
 		}
 		if chunk.Done {
+			sources = chunk.Sources
 			break
 		}
 		fmt.Print(chunk.Content)
 	}
 	fmt.Println()
+
+	if len(sources) > 0 {
+		fmt.Println("\nSources:")
+		for _, src := range sources {
+			fmt.Printf("  - %s (%s)\n", src.Title, src.Path)
+		}
+	}
 
 	if opts.Save {
 		fmt.Println("\nQ&A saved to wiki synthesis page.")

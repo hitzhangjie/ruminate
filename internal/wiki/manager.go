@@ -505,9 +505,14 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-// Search searches wiki pages and raw sources using hybrid retrieval (FTS5 +
-// vector similarity with RRF fusion) when an embedder is configured, falling
-// back to FTS5-only full-text search with AND→OR fallback.
+// Search searches wiki pages and raw sources.
+//
+// When an embedder is configured, it uses vector-first hybrid retrieval:
+// vector similarity is the primary signal, and FTS5 AND results act as a
+// precision booster via RRF. If FTS AND contributes nothing, vector results
+// are returned directly (without diluting them via weak FTS OR matches).
+//
+// When no embedder is configured, it falls back to FTS5 with AND→OR fallback.
 //
 // This is the primary search entry point for both simple lookups (find command)
 // and context retrieval for AI-powered Q&A (ask command).
@@ -517,47 +522,84 @@ func (m *Manager) Search(ctx context.Context, query string, topN int) ([]SearchR
 	if m.embedder != nil {
 		return m.hybridSearch(ctx, query, topN)
 	}
-	return m.index.SearchWithSnippets(query, topN)
+	return m.ftsWithFallback(query, topN)
 }
 
-// hybridSearch performs FTS5 keyword search and vector similarity search,
-// then fuses the two ranked lists with Reciprocal Rank Fusion (k=60).
+// hybridSearch implements vector-first hybrid retrieval.
 //
-// If either sub-search fails, the other is used alone. This ensures graceful
-// degradation when embeddings are unavailable for some pages or the embedder
-// encounters a transient error.
+// Strategy (tiered fallback):
+//  1. Vector search is the primary signal — it handles semantics, synonyms,
+//     and cross-language queries that FTS5 cannot.
+//  2. FTS5 AND acts as a precision booster: when the user's query contains
+//     exact keywords in the index, FTS results receive RRF scores and
+//     surface high-precision matches to the top.
+//  3. FTS5 OR acts as a secondary booster: when AND is too strict (e.g.
+//     mixed-language queries without spaces, rare tokens), OR provides
+//     keyword grounding so the RRF fusion isn't driven by vector alone.
+//     Without this, vector-only would return ALL pages weakly sorted by
+//     cosine similarity — noise that the LLM cannot use.
+//  4. Vector-only: only when both FTS strategies return nothing.
+//  5. If vector search fails entirely (embedder down, no vectors indexed),
+//     we fall back to the full FTS pipeline (AND → OR).
 func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]SearchResult, error) {
-	// Double the limit for each sub-search since RRF will deduplicate and re-rank.
 	subLimit := topN * 2
 
-	// FTS5 keyword search
-	ftsResults, ftsErr := m.index.SearchWithSnippets(query, subLimit)
-
-	// Vector similarity search
+	// Step 1: Vector search (primary signal)
 	queryVec, embErr := m.embedder.EmbedQuery(ctx, query)
-	var vecResults []SearchResult
-	if embErr == nil {
-		vecResults, _ = m.index.SearchByVector(queryVec, subLimit)
+	if embErr != nil {
+		// Embedder unavailable → full FTS fallback
+		return m.ftsWithFallback(query, topN)
 	}
 
-	// If both failed, return what we have
-	if ftsErr != nil && (embErr != nil || len(vecResults) == 0) {
-		if ftsErr != nil {
-			return nil, ftsErr
+	vecResults, _ := m.index.SearchByVector(queryVec, subLimit)
+	if len(vecResults) == 0 {
+		// No vector matches (e.g. empty index) → FTS fallback
+		return m.ftsWithFallback(query, topN)
+	}
+
+	// Step 2: FTS AND as precision booster
+	ftsResults, ftsErr := m.index.SearchWithSnippets(query, subLimit)
+	if ftsErr == nil && len(ftsResults) > 0 {
+		return rrfFuse(ftsResults, vecResults, topN), nil
+	}
+
+	// Step 3: FTS AND returned nothing — try OR as secondary booster.
+	// This provides keyword grounding for mixed-language queries and
+	// queries with rare tokens that AND would drop.
+	orQuery := toFTS5OrQuery(query)
+	if orQuery != "" {
+		orResults, err := m.index.searchWithSnippets(orQuery, subLimit)
+		if err == nil && len(orResults) > 0 {
+			return rrfFuse(orResults, vecResults, topN), nil
 		}
-		return nil, embErr
 	}
 
-	// If only one side succeeded, use it alone
-	if ftsErr != nil {
-		return vecResults[:min(topN, len(vecResults))], nil
+	// Step 4: Neither FTS strategy contributed — vector-only
+	n := topN
+	if n > len(vecResults) {
+		n = len(vecResults)
 	}
-	if embErr != nil || len(vecResults) == 0 {
-		return ftsResults[:min(topN, len(ftsResults))], nil
-	}
+	return vecResults[:n], nil
+}
 
-	// Fuse with RRF
-	return rrfFuse(ftsResults, vecResults, topN), nil
+// ftsWithFallback performs FTS5 AND search, falling back to OR if AND
+// returns nothing. This is used when no embedder is available, or as the
+// last-resort fallback when vector search fails in hybrid mode.
+func (m *Manager) ftsWithFallback(query string, topN int) ([]SearchResult, error) {
+	results, err := m.index.SearchWithSnippets(query, topN)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		orQuery := toFTS5OrQuery(query)
+		if orQuery != "" {
+			results, err = m.index.searchWithSnippets(orQuery, topN)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return results, nil
 }
 
 // rrfFuse fuses two ranked result lists using Reciprocal Rank Fusion (k=60).

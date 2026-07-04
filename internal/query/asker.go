@@ -40,9 +40,10 @@ type Source struct {
 
 // AskChunk is a streaming fragment of an answer in progress.
 type AskChunk struct {
-	Content string // delta text; empty when Done is true and no error
-	Done    bool   // true when this is the last chunk
-	Error   error  // non-nil on error
+	Content string   // delta text; empty when Done is true and no error
+	Done    bool     // true when this is the last chunk
+	Error   error    // non-nil on error
+	Sources []Source // populated on the final chunk (Done=true, Error=nil)
 }
 
 // Ask sends a question to the LLM with relevant wiki pages as context and
@@ -182,8 +183,8 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 			}
 		}
 
-		// Signal done
-		askCh <- AskChunk{Done: true}
+		// Signal done with sources so the CLI can print them
+		askCh <- AskChunk{Done: true, Sources: sources}
 	}()
 
 	return askCh, nil
@@ -228,7 +229,10 @@ func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Messa
 			continue
 		}
 
-		fmt.Fprintf(&contextBuilder, "### [%d] %s (%s)\n\n", i+1, src.Title, src.Path)
+		// Use "Source N:" heading (not "[N]") to avoid the LLM confusing the
+		// index number with citation syntax and outputting [[3]] instead of
+		// the actual page title like [[Golang]].
+		fmt.Fprintf(&contextBuilder, "### Source %d: %s\n\n", i+1, src.Title)
 		// Truncate very long pages to avoid exceeding context window
 		content := page.Content
 		if len(content) > 4000 {
@@ -238,13 +242,30 @@ func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Messa
 		contextBuilder.WriteString("\n\n---\n\n")
 	}
 
+	// Build a reference list so the LLM can map titles to source numbers
+	// if it chooses to use numeric citations.
+	var refList strings.Builder
+	for i, src := range sources {
+		fmt.Fprintf(&refList, "  - Source %d: [[%s]]\n", i+1, src.Title)
+	}
+
 	systemPrompt := fmt.Sprintf(`You are a knowledgeable research assistant answering questions based on the user's personal wiki.
 
 Below are relevant wiki pages that may contain the answer. Use ONLY the provided context to answer the question. If the context doesn't contain enough information, say so honestly — do not fabricate facts.
 
-Cite your sources inline using the page title in [[double brackets]], e.g. "According to [[Entity Name]], ...".
+## Citation Rules
 
-%s`, contextBuilder.String())
+When citing a source, use the page TITLE in [[double brackets]]. For example:
+  - "According to [[Golang]], Go's GC uses mark-sweep."
+  - "[[垃圾回收]] is an automatic memory management technique."
+
+IMPORTANT: Do NOT use numeric references like [[1]] or [[3]] — these are ambiguous.
+Use the actual page title every time.
+
+## Reference List (for your reference — cite by title, not number)
+
+%s
+%s`, refList.String(), contextBuilder.String())
 
 	return []llm.Message{
 		{Role: "system", Content: systemPrompt},
