@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hitzhangjie/ruminate/internal/trace"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
@@ -36,12 +37,18 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("loading config: %w", err)
 		}
+		mergeVerbose(cmd, cfg)
 
 		// Open wiki manager (search only needs index, not LLM)
 		mgr := wiki.NewManager(cfg)
 		if !mgr.IsInitialized() {
 			return fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
 		}
+
+		// Attach tracer for pipeline observability
+		tr := trace.New(cfg.Verbose)
+		mgr.SetTracer(tr)
+		defer tr.Flush(os.Stderr)
 
 		// Search using hybrid retrieval when embedder is available, FTS5 otherwise
 		ctx := context.Background()

@@ -21,6 +21,10 @@ type Config struct {
 
 	// Server configuration.
 	Server ServerConfig `yaml:"server" mapstructure:"server"`
+
+	// Verbose enables detailed pipeline logging to stderr.
+	// Set via --verbose/-v flag or RUMINATE_VERBOSE=true env var.
+	Verbose bool `yaml:"verbose" mapstructure:"verbose"`
 }
 
 // LLMConfig holds configuration for the LLM inference provider.

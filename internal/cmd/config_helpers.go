@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/hitzhangjie/ruminate/internal/config"
@@ -16,6 +17,15 @@ func loadConfig() (*config.Config, error) {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 	return cfg, nil
+}
+
+// mergeVerbose reads the --verbose persistent flag from the command and
+// sets cfg.Verbose accordingly. CLI flag takes precedence over the config
+// file / env var value already loaded.
+func mergeVerbose(cmd *cobra.Command, cfg *config.Config) {
+	if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+		cfg.Verbose = true
+	}
 }
 
 // printConfig prints the configuration in YAML format.

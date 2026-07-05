@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hitzhangjie/ruminate/internal/query"
+	"github.com/hitzhangjie/ruminate/internal/trace"
 )
 
 var (
@@ -43,12 +44,18 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("loading config: %w", err)
 		}
+		mergeVerbose(cmd, cfg)
 
 		// Create query engine (internally initializes wiki.Manager)
 		engine, err := query.NewEngine(cfg)
 		if err != nil {
 			return err
 		}
+
+		// Attach tracer for pipeline observability
+		tr := trace.New(cfg.Verbose)
+		engine.SetTracer(tr)
+		defer tr.Flush(os.Stderr)
 
 		opts := &query.AskOptions{
 			TopN:     askTopN,

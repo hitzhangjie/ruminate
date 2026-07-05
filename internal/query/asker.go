@@ -11,23 +11,14 @@ import (
 
 // AskOptions controls AI question-answering behavior.
 type AskOptions struct {
-	// TopN is the number of top search results to use as context.
-	// Default: DefaultTopN (20).
-	TopN int
-
-	// Save controls whether to write the Q&A result back as a wiki page.
-	Save bool
-
-	// NoStream disables streaming output.
-	NoStream bool
+	TopN     int  // Number of diverse search results to use as LLM context.
+	Save     bool // Save the Q&A result as a wiki synthesis page.
+	NoStream bool // Disable streaming output.
 }
 
 // AskResult is the final result of an AI Q&A request.
 type AskResult struct {
-	// Answer is the complete synthesized answer text.
-	Answer string
-
-	// Sources lists the wiki pages referenced in the answer.
+	Answer  string
 	Sources []Source
 }
 
@@ -40,10 +31,10 @@ type Source struct {
 
 // AskChunk is a streaming fragment of an answer in progress.
 type AskChunk struct {
-	Content string   // delta text; empty when Done is true and no error
-	Done    bool     // true when this is the last chunk
-	Error   error    // non-nil on error
-	Sources []Source // populated on the final chunk (Done=true, Error=nil)
+	Content string
+	Done    bool
+	Error   error
+	Sources []Source
 }
 
 const DefaultTopN = 20
@@ -60,9 +51,18 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 		save = opts.Save
 	}
 
+	if e.tracer != nil {
+		e.tracer.Begin("ask", "provider", e.llmCfg.Provider, "model", e.llmCfg.Model,
+			"query", question, "topN", topN)
+		defer e.tracer.End("saved", save)
+	}
+
 	// 1. Search for relevant pages
 	sources, err := e.retrieveContext(ctx, question, topN)
 	if err != nil {
+		if e.tracer != nil {
+			e.tracer.Error(err)
+		}
 		return nil, fmt.Errorf("retrieving context: %w", err)
 	}
 
@@ -76,15 +76,36 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 	// 2. Build prompt with context
 	messages := e.buildAskMessages(question, sources)
 
+	if e.tracer != nil {
+		contextChars := 0
+		for _, msg := range messages {
+			contextChars += len(msg.Content)
+		}
+		tokenEst := contextChars / 3
+		e.tracer.Begin("context")
+		e.tracer.End("sources", len(sources), "chars", contextChars, "tokens_est", tokenEst,
+			"docs", sourceDocList(sources))
+	}
+
 	// 3. Call LLM
 	if e.llmProvider == nil {
 		return nil, fmt.Errorf("no LLM provider configured — check your config")
+	}
+	if e.tracer != nil {
+		e.tracer.Begin("llm", "model", e.llmCfg.Model, "temperature",
+			fmt.Sprintf("%.2f", e.llmCfg.Temperature), "streaming", false)
 	}
 	resp, err := e.llmProvider.Chat(ctx, messages, &llm.ChatOptions{
 		Temperature: e.llmCfg.Temperature,
 	})
 	if err != nil {
+		if e.tracer != nil {
+			e.tracer.Error(err)
+		}
 		return nil, fmt.Errorf("LLM chat: %w", err)
+	}
+	if e.tracer != nil {
+		e.tracer.End("answer_chars", len(resp.Content))
 	}
 
 	result := &AskResult{
@@ -95,6 +116,9 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 	// 4. Optionally save to wiki
 	if save {
 		if err := e.saveToWiki(question, result); err != nil {
+			if e.tracer != nil {
+				e.tracer.Error(err)
+			}
 			return result, fmt.Errorf("saving to wiki: %w", err)
 		}
 	}
@@ -103,19 +127,6 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 }
 
 // AskStream is like Ask but streams the answer as it is generated.
-//
-// The returned channel emits chunks of the answer text. The final chunk has
-// Done=true and includes the source list in its Error field as a nil error
-// (the caller should check Done, not Error, for the end of stream).
-//
-// Usage:
-//
-//	ch, err := engine.AskStream(ctx, "What is X?", nil)
-//	for chunk := range ch {
-//	    if chunk.Error != nil { ... }
-//	    if chunk.Done { break }
-//	    fmt.Print(chunk.Content)
-//	}
 func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOptions) (<-chan AskChunk, error) {
 	topN := DefaultTopN
 	save := false
@@ -126,9 +137,18 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 		save = opts.Save
 	}
 
+	if e.tracer != nil {
+		e.tracer.Begin("ask", "provider", e.llmCfg.Provider, "model", e.llmCfg.Model,
+			"query", question, "topN", topN)
+		defer e.tracer.End("saved", save)
+	}
+
 	// 1. Search for relevant pages
 	sources, err := e.retrieveContext(ctx, question, topN)
 	if err != nil {
+		if e.tracer != nil {
+			e.tracer.Error(err)
+		}
 		return nil, fmt.Errorf("retrieving context: %w", err)
 	}
 
@@ -145,9 +165,24 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 	// 2. Build prompt with context
 	messages := e.buildAskMessages(question, sources)
 
+	if e.tracer != nil {
+		contextChars := 0
+		for _, msg := range messages {
+			contextChars += len(msg.Content)
+		}
+		tokenEst := contextChars / 3
+		e.tracer.Begin("context")
+		e.tracer.End("sources", len(sources), "chars", contextChars, "tokens_est", tokenEst,
+			"docs", sourceDocList(sources))
+	}
+
 	// 3. Start streaming LLM call
 	if e.llmProvider == nil {
 		return nil, fmt.Errorf("no LLM provider configured — check your config")
+	}
+	if e.tracer != nil {
+		e.tracer.Begin("llm", "model", e.llmCfg.Model, "temperature",
+			fmt.Sprintf("%.2f", e.llmCfg.Temperature), "streaming", true)
 	}
 	llmCh, err := e.llmProvider.ChatStream(ctx, messages, &llm.ChatOptions{
 		Temperature: e.llmCfg.Temperature,
@@ -156,7 +191,7 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 		return nil, fmt.Errorf("LLM chat stream: %w", err)
 	}
 
-	// 4. Adapt the LLM chunk stream to AskChunk stream, appending sources on done
+	// 4. Adapt the LLM chunk stream to AskChunk stream
 	askCh := make(chan AskChunk, 10)
 	go func() {
 		defer close(askCh)
@@ -173,7 +208,6 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 			askCh <- AskChunk{Content: chunk.Content}
 		}
 
-		// Optionally save to wiki with the complete answer
 		if save {
 			result := &AskResult{
 				Answer:  fullAnswer.String(),
@@ -185,7 +219,10 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 			}
 		}
 
-		// Signal done with sources so the CLI can print them
+		if e.tracer != nil {
+			e.tracer.End("answer_chars", fullAnswer.Len())
+		}
+
 		askCh <- AskChunk{Done: true, Sources: sources}
 	}()
 
@@ -193,10 +230,6 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 }
 
 // retrieveContext searches the wiki for pages relevant to the question.
-//
-// Delegates to Manager.Search, which uses hybrid retrieval (FTS5 + vector
-// similarity, RRF-fused) when an embedder is configured, falling back to
-// FTS5-only with AND→OR fallback otherwise.
 func (e *Engine) retrieveContext(ctx context.Context, question string, topN int) ([]Source, error) {
 	results, err := e.wiki.Search(ctx, question, topN)
 	if err != nil {
@@ -205,11 +238,9 @@ func (e *Engine) retrieveContext(ctx context.Context, question string, topN int)
 
 	sources := make([]Source, 0, len(results))
 	for _, r := range results {
-		// Validate the page is readable (skip if missing from disk)
 		if _, err := e.wiki.ReadByPath(r.Path); err != nil {
 			continue
 		}
-
 		sources = append(sources, Source{
 			Title:   r.Title,
 			Path:    r.Path,
@@ -225,17 +256,12 @@ func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Messa
 	var contextBuilder strings.Builder
 	contextBuilder.WriteString("## Relevant Wiki Pages\n\n")
 	for i, src := range sources {
-		// Read full content for each source
 		page, err := e.wiki.ReadByPath(src.Path)
 		if err != nil {
 			continue
 		}
 
-		// Use "Source N:" heading (not "[N]") to avoid the LLM confusing the
-		// index number with citation syntax and outputting [[3]] instead of
-		// the actual page title like [[Golang]].
 		fmt.Fprintf(&contextBuilder, "### Source %d: %s\n\n", i+1, src.Title)
-		// Truncate very long pages to avoid exceeding context window
 		content := page.Content
 		if len(content) > 4000 {
 			content = content[:4000] + "\n\n... (truncated)"
@@ -244,8 +270,6 @@ func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Messa
 		contextBuilder.WriteString("\n\n---\n\n")
 	}
 
-	// Build a reference list so the LLM can map titles to source numbers
-	// if it chooses to use numeric citations.
 	var refList strings.Builder
 	for i, src := range sources {
 		fmt.Fprintf(&refList, "  - Source %d: [[%s]]\n", i+1, src.Title)
@@ -289,14 +313,11 @@ func (e *Engine) saveToWiki(question string, result *AskResult) error {
 		b.WriteString(fmt.Sprintf("- [[%s]] (%s)\n", src.Title, src.Path))
 	}
 
-	// Check if page already exists and update, or create new
 	existing, err := e.wiki.Read(title, wiki.PageTypeSynthesis)
 	if err != nil {
-		// Page doesn't exist — create it
 		_, err = e.wiki.Create(title, wiki.PageTypeSynthesis, b.String())
 		return err
 	}
-	// Page exists — update it
 	_, err = e.wiki.Update(existing.Title, wiki.PageTypeSynthesis, b.String())
 	return err
 }
@@ -314,4 +335,25 @@ func stripTags(s string) string {
 	s = strings.ReplaceAll(s, "<b>", "")
 	s = strings.ReplaceAll(s, "</b>", "")
 	return s
+}
+
+// sourceDocList formats source titles for trace output (compact, readable).
+func sourceDocList(sources []Source) string {
+	if len(sources) == 0 {
+		return "[]"
+	}
+	var b strings.Builder
+	b.WriteString("[")
+	for i, src := range sources {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(src.Title)
+		if i >= 9 {
+			fmt.Fprintf(&b, ",…(%d total)", len(sources))
+			break
+		}
+	}
+	b.WriteString("]")
+	return b.String()
 }

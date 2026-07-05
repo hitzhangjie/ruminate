@@ -11,7 +11,7 @@ import (
 	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/gitwrap"
 	"github.com/hitzhangjie/ruminate/internal/llm"
-	"github.com/hitzhangjie/ruminate/internal/verbose"
+	"github.com/hitzhangjie/ruminate/internal/trace"
 )
 
 // PageType classifies a wiki page.
@@ -49,13 +49,18 @@ type Manager struct {
 	embedder    llm.EmbeddingProvider // optional embedding provider for semantic search
 	llmProvider llm.LLMProvider       // LLM provider for inference
 	llmCfg      config.LLMConfig      // LLM configuration
-	verbose     *verbose.Logger       // verbose logging
+	tracer      *trace.Tracer         // pipeline step recorder
 }
 
 // SetEmbeddingProvider sets the embedding provider used to compute vectors
 // for pages created/updated via this Manager. Pass nil to disable embeddings.
 func (m *Manager) SetEmbeddingProvider(ep llm.EmbeddingProvider) {
 	m.embedder = ep
+}
+
+// SetTracer attaches a tracer for pipeline observability. Pass nil to disable.
+func (m *Manager) SetTracer(tr *trace.Tracer) {
+	m.tracer = tr
 }
 
 // NewManager creates a wiki manager from the given configuration.
@@ -82,9 +87,6 @@ func NewManager(cfg *config.Config) *Manager {
 			m.embedder = embedder
 		}
 	}
-
-	// Initialize verbose logger from config.
-	m.verbose = verbose.New(cfg.Verbose)
 
 	// Auto-initialize LLM provider from config. Non-fatal: llmProvider stays
 	// nil if provider is empty or unreachable.
@@ -553,60 +555,71 @@ func (m *Manager) Search(ctx context.Context, query string, topN int) ([]SearchR
 //  6. If vector search fails entirely (embedder down, no vectors indexed),
 //     we fall back to the full FTS pipeline (AND → OR).
 func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]SearchResult, error) {
-	m.verbose.Logf("[search] strategy=hybrid query=%q recall_size=200 topN=%d", query, topN)
+	if m.tracer != nil {
+		m.tracer.Begin("search", "query", query, "topN", topN, "strategy", "hybrid")
+		defer m.tracer.End()
+	}
 
-	// Step 1: Vector search with large fixed recall pool.
-	// 200 is enough to cover multiple semantic clusters even when one
-	// dominates the relevance ranking (e.g. 100+ GC pages before THP pages).
+	// Step 1: Vector search with large fixed recall pool (200).
 	queryVec, embErr := m.embedder.EmbedQuery(ctx, query)
 	if embErr != nil {
-		m.verbose.Logf("[search] vector: error=%q → fallback to FTS", embErr)
+		if m.tracer != nil {
+			m.tracer.Begin("vector")
+			m.tracer.Error(embErr)
+			m.tracer.End()
+		}
 		return m.ftsWithFallback(query, topN)
 	}
 
 	const recallSize = 200
 	scoredResults, _ := m.index.searchByVectorWithMeta(queryVec, recallSize)
 	if len(scoredResults) == 0 {
-		m.verbose.Logf("[search] vector: results=0 → fallback to FTS")
+		if m.tracer != nil {
+			m.tracer.Begin("vector")
+			m.tracer.End("results", 0)
+		}
 		return m.ftsWithFallback(query, topN)
 	}
 
-	m.verbose.Logf("[search] vector: results=%d (recall pool)", len(scoredResults))
+	if m.tracer != nil {
+		m.tracer.Begin("vector", "pool", recallSize)
+		m.tracer.End("results", len(scoredResults), "docs", scoredDocList(scoredResults[:min(5, len(scoredResults))]))
+	}
 
-	// Step 2: FTS AND as precision booster — boost vector results that
-	// also match FTS keywords via RRF. Keep the full fused pool for MMR.
+	// Step 2: FTS AND as precision booster via RRF.
 	ftsBoosted := false
 	if andQuery := toFTS5AndQuery(query); andQuery != "" {
 		ftsResults, ftsErr := m.index.searchWithSnippets(andQuery, 5)
 		if ftsErr == nil && len(ftsResults) > 0 {
 			scoredResults = rrfFuseFull(ftsResults, scoredResults)
 			ftsBoosted = true
-			m.verbose.Logf("[search] fts: type=AND results=%d boosted=true", len(ftsResults))
+			if m.tracer != nil {
+				m.tracer.Begin("fts", "type", "AND")
+				m.tracer.End("results", len(ftsResults), "docs", docList(ftsResults[:min(3, len(ftsResults))]))
+			}
 		}
 	}
 
-	// Step 3: FTS AND returned nothing — try OR as secondary booster.
+	// Step 3: FTS AND returned nothing — try OR.
 	if !ftsBoosted {
 		if orQuery := toFTS5OrQuery(query); orQuery != "" {
 			orResults, err := m.index.searchWithSnippets(orQuery, 5)
 			if err == nil && len(orResults) > 0 {
 				scoredResults = rrfFuseFull(orResults, scoredResults)
-				m.verbose.Logf("[search] fts: type=OR results=%d boosted=true", len(orResults))
+				if m.tracer != nil {
+					m.tracer.Begin("fts", "type", "OR")
+					m.tracer.End("results", len(orResults), "docs", docList(orResults[:min(3, len(orResults))]))
+				}
 			}
 		}
 	}
 
-	if !ftsBoosted {
-		m.verbose.Logf("[search] fts: boosted=false (no FTS matches)")
+	if m.tracer != nil {
+		m.tracer.Begin("rrf")
+		m.tracer.End("fused", len(scoredResults))
 	}
 
-	m.verbose.Logf("[search] rrf: fused=%d", len(scoredResults))
-
-	// Step 4: MMR diversity — select a diverse pool from the fused candidates.
-	// The MMR target (50) is independent of topN: MMR needs enough rounds for
-	// the diversity penalty to accumulate, so minority-relevant clusters
-	// (e.g. THP) get selected before the truncation to topN.
-	// λ=0.5 balances relevance and diversity equally.
+	// Step 4: MMR diversity.
 	const mmrTarget = 50
 	mmrN := mmrTarget
 	if mmrN > len(scoredResults) {
@@ -614,43 +627,55 @@ func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]S
 	}
 	diverse := mmrDiversify(queryVec, scoredResults, 0.5, mmrN)
 
-	m.verbose.Logf("[search] mmr: selected=%d λ=0.5 target=%d", len(diverse), mmrTarget)
+	if m.tracer != nil {
+		m.tracer.Begin("mmr", "lambda", 0.5, "target", mmrTarget)
+		m.tracer.End("selected", len(diverse), "docs", docList(diverse[:min(10, len(diverse))]))
+	}
 
-	// Step 4.5: LLM rerank — use the LLM to re-score the diverse candidates
-	// for fine-grained relevance. MMR ensures coverage across semantic clusters;
-	// rerank ensures the most precisely relevant items come first.
-	// Skip if LLM is unavailable or if there are fewer candidates than topN
-	// (no point reordering when all will be returned anyway).
+	// Step 4.5: LLM rerank.
 	if m.llmProvider != nil && len(diverse) > topN {
 		beforeRerank := len(diverse)
 		diverse = m.rerankWithLLM(ctx, query, diverse)
-		m.verbose.Logf("[search] rerank: candidates=%d→%d", beforeRerank, len(diverse))
+		if m.tracer != nil {
+			m.tracer.Begin("rerank")
+			m.tracer.End("candidates", fmt.Sprintf("%d→%d", beforeRerank, len(diverse)),
+				"docs", docList(diverse[:min(5, len(diverse))]))
+		}
 	}
 
-	// Step 5: Truncate to topN — the caller's LLM context budget.
+	// Step 5: Truncate to topN.
 	if topN < len(diverse) {
-		m.verbose.Logf("[search] final: topN=%d returned=%d", topN, topN)
+		if m.tracer != nil {
+			m.tracer.Begin("final")
+			m.tracer.End("returned", topN, "docs", docList(diverse[:topN]))
+		}
 		return diverse[:topN], nil
 	}
-	m.verbose.Logf("[search] final: topN=%d returned=%d", topN, len(diverse))
+	if m.tracer != nil {
+		m.tracer.Begin("final")
+		m.tracer.End("returned", len(diverse), "docs", docList(diverse[:min(5, len(diverse))]))
+	}
 	return diverse, nil
 }
 
 // ftsWithFallback performs FTS5 AND search with CJK bigram expansion,
-// falling back to OR if AND returns nothing. This is used when no embedder
-// is available, or as the last-resort fallback when vector search fails in
-// hybrid mode.
+// falling back to OR if AND returns nothing.
 func (m *Manager) ftsWithFallback(query string, topN int) ([]SearchResult, error) {
-	m.verbose.Logf("[search] strategy=fts query=%q topN=%d", query, topN)
+	if m.tracer != nil {
+		m.tracer.Begin("search", "query", query, "topN", topN, "strategy", "fts")
+		defer m.tracer.End()
+	}
 
-	// Use bigram-expanded AND query for better CJK matching
 	andQuery := toFTS5AndQuery(query)
 	results, err := m.index.searchWithSnippets(andQuery, topN)
 	if err != nil {
 		return nil, err
 	}
 	if len(results) == 0 {
-		m.verbose.Logf("[search] fts: type=AND results=0 → fallback to OR")
+		if m.tracer != nil {
+			m.tracer.Begin("fts", "type", "AND")
+			m.tracer.End("results", 0)
+		}
 		orQuery := toFTS5OrQuery(query)
 		if orQuery != "" {
 			results, err = m.index.searchWithSnippets(orQuery, topN)
@@ -658,12 +683,49 @@ func (m *Manager) ftsWithFallback(query string, topN int) ([]SearchResult, error
 				return nil, err
 			}
 		}
-		m.verbose.Logf("[search] fts: type=OR results=%d", len(results))
+		if m.tracer != nil {
+			m.tracer.Begin("fts", "type", "OR")
+			m.tracer.End("results", len(results), "docs", docList(results[:min(5, len(results))]))
+		}
 	} else {
-		m.verbose.Logf("[search] fts: type=AND results=%d", len(results))
+		if m.tracer != nil {
+			m.tracer.Begin("fts", "type", "AND")
+			m.tracer.End("results", len(results), "docs", docList(results[:min(5, len(results))]))
+		}
 	}
 	return results, nil
 }
+
+// docList formats search result titles for trace output (compact, readable).
+func docList(results []SearchResult) string {
+	if len(results) == 0 {
+		return "[]"
+	}
+	var b strings.Builder
+	b.WriteString("[")
+	for i, r := range results {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(r.Title)
+		if i >= 9 {
+			fmt.Fprintf(&b, ",…(%d total)", len(results))
+			break
+		}
+	}
+	b.WriteString("]")
+	return b.String()
+}
+// scoredDocList formats scoredResult titles for trace output.
+func scoredDocList(results []scoredResult) string {
+	sr := make([]SearchResult, len(results))
+	for i, r := range results {
+		sr[i] = r.SearchResult
+	}
+	return docList(sr)
+}
+
+
 
 // rrfFuse uses Reciprocal Rank Fusion (k=60) to boost vector search results
 // with FTS keyword matches. FTS acts as a pure booster: only pages that already

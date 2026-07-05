@@ -23,6 +23,8 @@ func Execute() error {
 }
 
 func init() {
+	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "Enable verbose pipeline logging to stderr")
+
 	rootCmd.AddCommand(ingestCmd)
 	rootCmd.AddCommand(askCmd)
 	rootCmd.AddCommand(findCmd)
