@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -25,18 +25,62 @@ type Source struct {
 }
 
 // Reader reads source materials from files or URLs.
+//
+// For file reading, Reader maintains a registry of FileReader implementations
+// keyed by lowercase file extension. When Read is called on a file, the Reader
+// dispatches to the matching FileReader based on the file's extension.
+//
+// Built-in readers (PlainTextReader) are registered automatically. Additional
+// readers can be registered via Register() to support new file formats.
 type Reader struct {
-	client *http.Client
+	client  *http.Client
+	readers map[string]FileReader // extension -> reader, lowercase keys
 }
 
-// NewReader creates a new Reader.
+// NewReader creates a new Reader with built-in file readers registered.
 func NewReader() *Reader {
-	return &Reader{client: &http.Client{}}
+	r := &Reader{
+		client:  &http.Client{},
+		readers: make(map[string]FileReader),
+	}
+	r.Register(&PlainTextReader{})
+	return r
+}
+
+// Register adds a FileReader to the dispatch table.
+// It maps each of the reader's Extensions() (lowercased) to this reader.
+// If an extension is already registered, it is overwritten — this allows
+// custom readers to replace built-in ones for specific formats.
+func (r *Reader) Register(fr FileReader) {
+	for _, ext := range fr.Extensions() {
+		r.readers[strings.ToLower(ext)] = fr
+	}
+}
+
+// SupportedExtensions returns the set of all registered extensions, sorted.
+// Each extension includes the leading dot and is lowercase.
+func (r *Reader) SupportedExtensions() []string {
+	exts := make([]string, 0, len(r.readers))
+	for ext := range r.readers {
+		exts = append(exts, ext)
+	}
+	sort.Strings(exts)
+	return exts
+}
+
+// IsSupportedExtension reports whether the given extension has a registered reader.
+// The extension should include the leading dot (e.g. ".md").
+// Matching is case-insensitive.
+func (r *Reader) IsSupportedExtension(ext string) bool {
+	_, ok := r.readers[strings.ToLower(ext)]
+	return ok
 }
 
 // Read reads a source from a file path or URL.
 // Files are detected by non-URL paths (no scheme).
-// Supported file formats: .md, .txt.
+// For files, dispatches to the registered FileReader for the file's extension.
+// Supported formats are determined by registered FileReaders (PlainTextReader
+// handles .md, .txt, etc. by default).
 // sourceType is a user-defined label: "article", "paper", "note", "book".
 func (r *Reader) Read(pathOrURL, sourceType string) (*Source, error) {
 	if isURL(pathOrURL) {
@@ -50,7 +94,13 @@ func isURL(s string) bool {
 }
 
 func (r *Reader) readFile(path, sourceType string) (*Source, error) {
-	content, err := os.ReadFile(path)
+	ext := strings.ToLower(filepath.Ext(path))
+	fr, ok := r.readers[ext]
+	if !ok {
+		return nil, &ErrUnsupportedFileType{Path: path, Ext: ext}
+	}
+
+	content, err := fr.Read(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading file %s: %w", path, err)
 	}

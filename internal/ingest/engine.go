@@ -136,6 +136,15 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 	}, nil
 }
 
+// IsSupportedExtension reports whether the Reader has a registered handler
+// for the given file extension. The extension should include the leading dot
+// (e.g. ".md"). Matching is case-insensitive.
+//
+// This is used by the sync engine to filter files before attempting ingestion.
+func (e *Engine) IsSupportedExtension(ext string) bool {
+	return e.reader.IsSupportedExtension(ext)
+}
+
 // Ingest processes a source (file path or URL) end-to-end:
 //  1. Read source
 //  2. Save raw copy

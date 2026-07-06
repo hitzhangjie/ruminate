@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,6 +74,25 @@ func TestReader_ReadFile(t *testing.T) {
 		}
 	})
 
+	t.Run("UnsupportedExtension", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "data.xyz")
+		content := "some data"
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		r := NewReader()
+		_, err := r.Read(path, "note")
+		if err == nil {
+			t.Fatal("expected error for unsupported file type")
+		}
+		var unsupportedErr *ErrUnsupportedFileType
+		if !errors.As(err, &unsupportedErr) {
+			t.Fatalf("expected ErrUnsupportedFileType, got %T: %v", err, err)
+		}
+	})
+
 	t.Run("NotFound", func(t *testing.T) {
 		r := NewReader()
 		_, err := r.Read("/nonexistent/file.md", "note")
@@ -115,6 +135,106 @@ func TestReader_ReadURL(t *testing.T) {
 			t.Fatal("expected error for 404")
 		}
 	})
+}
+
+func TestPlainTextReader_Extensions(t *testing.T) {
+	r := &PlainTextReader{}
+	exts := r.Extensions()
+	if len(exts) == 0 {
+		t.Fatal("expected at least one extension")
+	}
+	extSet := make(map[string]bool)
+	for _, ext := range exts {
+		extSet[ext] = true
+	}
+	for _, want := range []string{".md", ".txt", ".log"} {
+		if !extSet[want] {
+			t.Errorf("expected extension %q in PlainTextReader", want)
+		}
+	}
+}
+
+func TestReader_Register(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.custom")
+	content := "custom format content"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReader()
+	r.Register(&mockCustomReader{})
+
+	src, err := r.Read(path, "note")
+	if err != nil {
+		t.Fatalf("Read failed after registering custom reader: %v", err)
+	}
+	if src.Content != content {
+		t.Errorf("expected content %q, got %q", content, src.Content)
+	}
+}
+
+func TestReader_CaseInsensitiveExtension(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.MD")
+	content := "# Case insensitive"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReader()
+	src, err := r.Read(path, "note")
+	if err != nil {
+		t.Fatalf("Read failed for .MD extension: %v", err)
+	}
+	if src.Title != "data" {
+		t.Errorf("expected title 'data', got %q", src.Title)
+	}
+}
+
+func TestReader_IsSupportedExtension(t *testing.T) {
+	r := NewReader()
+	if !r.IsSupportedExtension(".md") {
+		t.Error("expected .md to be supported")
+	}
+	if !r.IsSupportedExtension(".MD") {
+		t.Error("expected .MD to be supported (case-insensitive)")
+	}
+	if r.IsSupportedExtension(".xyz") {
+		t.Error("expected .xyz to be unsupported")
+	}
+	if r.IsSupportedExtension("") {
+		t.Error("expected empty extension to be unsupported")
+	}
+}
+
+func TestReader_SupportedExtensions(t *testing.T) {
+	r := NewReader()
+	exts := r.SupportedExtensions()
+	if len(exts) == 0 {
+		t.Fatal("expected at least one extension")
+	}
+	found := false
+	for _, ext := range exts {
+		if ext == ".md" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected .md in supported extensions")
+	}
+}
+
+// mockCustomReader is a FileReader used for testing registration.
+type mockCustomReader struct{}
+
+func (m *mockCustomReader) Extensions() []string {
+	return []string{".custom"}
+}
+
+func (m *mockCustomReader) Read(path string) ([]byte, error) {
+	return os.ReadFile(path)
 }
 
 func TestExtractTitle(t *testing.T) {

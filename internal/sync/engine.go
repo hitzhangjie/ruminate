@@ -39,6 +39,7 @@ type SyncResult struct {
 	FilesModified int
 	FilesRenamed  int
 	FilesDeleted  int
+	FilesSkipped  int
 	Errors        []string
 }
 
@@ -212,6 +213,32 @@ func (e *Engine) processChanges(ctx context.Context, changes [][2]string, result
 		// Normalize the status to first character.
 		statusCode := status[0:1]
 
+		// Deletions don't read file content — always process them regardless of
+		// file type, since they only update wiki metadata.
+		if statusCode == "D" {
+			fmt.Printf("  [D] %s (keeping wiki content)\n", filePath)
+			if e.dryRun {
+				fmt.Printf("    [dry-run] Would mark as deleted in log\n")
+			} else {
+				if err := e.handleDeletedFile(filePath); err != nil {
+					errMsg := fmt.Sprintf("handling deleted %s: %v", filePath, err)
+					result.Errors = append(result.Errors, errMsg)
+					fmt.Fprintf(os.Stderr, "  Error: %s\n", errMsg)
+					continue
+				}
+			}
+			result.FilesDeleted++
+			continue
+		}
+
+		// For A/M/R, check that the file type is supported before attempting ingest.
+		ext := strings.ToLower(filepath.Ext(filePath))
+		if !e.ingestEngine.IsSupportedExtension(ext) {
+			fmt.Printf("  [-] %s (unsupported file type, skipping)\n", filePath)
+			result.FilesSkipped++
+			continue
+		}
+
 		fullPath := filepath.Join(e.sourceRepo, filePath)
 
 		switch statusCode {
@@ -256,20 +283,6 @@ func (e *Engine) processChanges(ctx context.Context, changes [][2]string, result
 				}
 			}
 			result.FilesRenamed++
-
-		case "D":
-			fmt.Printf("  [D] %s (keeping wiki content)\n", filePath)
-			if e.dryRun {
-				fmt.Printf("    [dry-run] Would mark as deleted in log\n")
-			} else {
-				if err := e.handleDeletedFile(filePath); err != nil {
-					errMsg := fmt.Sprintf("handling deleted %s: %v", filePath, err)
-					result.Errors = append(result.Errors, errMsg)
-					fmt.Fprintf(os.Stderr, "  Error: %s\n", errMsg)
-					continue
-				}
-			}
-			result.FilesDeleted++
 
 		default:
 			fmt.Printf("  [?] %s (unhandled status: %s)\n", filePath, status)
