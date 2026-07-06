@@ -201,7 +201,7 @@ ruminate ask --effort thorough "Go GC 如何适应透明巨页"   # HyDE
 | P1 | 引入 Rerank 阶段 | ✅ |
 | P1 | Query Expansion / HyDE | ✅ 已实现（通过 `--effort` 控制） |
 | P2 | Small-to-big 检索 | 待定 |
-| P2 | Iterative Retrieval | 待定 |
+| P2 | Iterative Retrieval | ✅ 已实现（通过 Query Expansion + HyDE，eager 并行多路召回，见 [iterative-retrieval.md](iterative-retrieval.md)） |
 | P3 | 多路召回扩展 | 待定 |
 
 ## 文件变更记录
