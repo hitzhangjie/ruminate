@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/lint"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
@@ -77,6 +78,107 @@ func init() {
 	lintCmd.Flags().Int("max-llm-pairs", lint.DefaultContradictionMaxPagePairs, "Max candidate page pairs sent to LLM for contradiction analysis")
 	lintCmd.Flags().Int("max-llm-chars", lint.DefaultContradictionMaxPageChars, "Max chars of page content per page in contradiction LLM prompt")
 	lintCmd.Flags().Bool("json", false, "Output report as JSON")
+
+	// Register subcommands.
+	lintCmd.AddCommand(lintSuppressCmd)
+	lintCmd.AddCommand(lintSuppressionsCmd)
+}
+
+// lintSuppressCmd adds a suppression rule to exclude a lint issue from future reports.
+var lintSuppressCmd = &cobra.Command{
+	Use:   "suppress",
+	Short: "Suppress a lint issue so it is hidden from future reports",
+	Long: `Add a suppression rule to hide a specific lint issue from future reports.
+
+Use this when you've reviewed an issue and determined it's not a real problem —
+for example, when two pages use the same term for different entities (polysemy).
+
+Suppressions are stored in .ruminate/lint-suppressions.json and can be
+edited manually or removed by editing the file.`,
+	Example: `  ruminate lint suppress --page wiki/summaries/xxx.md --related wiki/summaries/yyy.md --reason "一词多义：元宝指代不同实体"
+  ruminate lint suppress --check broken_link --page wiki/entities/old.md --reason "Known issue, will fix later"`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+
+		page, _ := cmd.Flags().GetString("page")
+		related, _ := cmd.Flags().GetString("related")
+		check, _ := cmd.Flags().GetString("check")
+		reason, _ := cmd.Flags().GetString("reason")
+
+		if page == "" {
+			return fmt.Errorf("--page is required")
+		}
+		if reason == "" {
+			return fmt.Errorf("--reason is required")
+		}
+
+		wikiRoot := config.ExpandPath(cfg.WikiPath)
+		sf, err := lint.LoadSuppressions(wikiRoot)
+		if err != nil {
+			return fmt.Errorf("loading suppressions: %w", err)
+		}
+
+		if err := sf.Add(check, page, related, reason); err != nil {
+			return fmt.Errorf("adding suppression: %w", err)
+		}
+
+		fmt.Printf("✓ Suppression added: %s\n", reason)
+		if related != "" {
+			fmt.Printf("  Check: %s, Page: %s ↔ %s\n", check, page, related)
+		} else {
+			fmt.Printf("  Check: %s, Page: %s\n", check, page)
+		}
+		return nil
+	},
+}
+
+// lintSuppressionsCmd lists all active suppression rules.
+var lintSuppressionsCmd = &cobra.Command{
+	Use:   "suppressions",
+	Short: "List all active suppression rules",
+	Long:  `Display all lint issue suppression rules currently in effect.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+
+		wikiRoot := config.ExpandPath(cfg.WikiPath)
+		sf, err := lint.LoadSuppressions(wikiRoot)
+		if err != nil {
+			return fmt.Errorf("loading suppressions: %w", err)
+		}
+
+		list := sf.List()
+		if len(list) == 0 {
+			fmt.Println("No active suppression rules.")
+			return nil
+		}
+
+		fmt.Printf("Suppression rules (%d):\n\n", len(list))
+		for _, s := range list {
+			fmt.Printf("  [%s]\n", s.ID[:8])
+			fmt.Printf("  Check:   %s\n", s.Check)
+			fmt.Printf("  Page:    %s\n", s.Page)
+			if s.RelatedPage != "" {
+				fmt.Printf("  Related: %s\n", s.RelatedPage)
+			}
+			fmt.Printf("  Reason:  %s\n", s.Reason)
+			fmt.Printf("  Created: %s\n", s.CreatedAt)
+			fmt.Println()
+		}
+		return nil
+	},
+}
+
+func init() {
+	lintSuppressCmd.Flags().String("page", "", "Primary page path (required)")
+	lintSuppressCmd.Flags().String("related", "", "Related page path (for pair-based issues like contradictions)")
+	lintSuppressCmd.Flags().String("check", "contradiction", "Check type: contradiction, broken_link, staleness, orphan")
+	lintSuppressCmd.Flags().String("reason", "", "Reason for suppression (required)")
 }
 
 // printLintReport prints a human-readable lint report to stdout.
@@ -93,6 +195,9 @@ func printLintReport(report *lint.Report) {
 			report.Stats.Errors, report.Stats.Warnings, report.Stats.Infos)
 	}
 	fmt.Println()
+	if report.Stats.Suppressed > 0 {
+		fmt.Printf("  Suppressed:     %d issue(s) hidden by suppression rules\n", report.Stats.Suppressed)
+	}
 	fmt.Println()
 
 	if len(report.Issues) == 0 {

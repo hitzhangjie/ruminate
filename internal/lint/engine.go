@@ -68,6 +68,7 @@ type Stats struct {
 	Errors      int `json:"errors"`
 	Warnings    int `json:"warnings"`
 	Infos       int `json:"infos"`
+	Suppressed  int `json:"suppressed"`
 }
 
 // Options controls which checks to run and their parameters.
@@ -169,6 +170,13 @@ func (e *Engine) Run(opts Options) (*Report, error) {
 	if checkSet[CheckContradiction] {
 		report.Issues = append(report.Issues, e.checkContradictions(pages, opts)...)
 	}
+
+	// Apply suppressions. Issues matching a suppression rule are removed
+	// from the report but counted so the user knows filtering occurred.
+	suppressions, _ := LoadSuppressions(e.mgr.Root())
+	beforeFilter := len(report.Issues)
+	report.Issues = FilterSuppressed(report.Issues, suppressions)
+	report.Stats.Suppressed = beforeFilter - len(report.Issues)
 
 	// Compute aggregate stats.
 	report.Stats.TotalIssues = len(report.Issues)
@@ -441,9 +449,17 @@ func (e *Engine) llmContradictionCheck(candidates []contradictionCandidate, opts
 
 	systemPrompt := `You are a knowledge-base consistency checker. Compare the two wiki pages below and identify factual contradictions — statements that cannot both be true.
 
-If there are no factual contradictions, respond with the single word: NONE.
-If there are contradictions, list each one on a separate line in the format:
-- CONTRADICTION: <brief description of the conflict>`
+IMPORTANT: Some entities may share the same name but refer to completely different things in different contexts (polysemy / homonym). For example, "元宝" could be an ancient Chinese currency in one page and a pet cat in another — this is NOT a contradiction, because the name refers to different entities in different domains.
+
+Analyze the pages and respond with one of the following for each finding:
+
+If the same entity name refers to clearly different things in different contexts/domains (polysemy), respond:
+- POLYSEMY: <brief explanation of why these are different entities despite sharing a name>
+
+If there are factual contradictions (same entity, same context, conflicting facts that cannot both be true), respond:
+- CONTRADICTION: <brief description of the conflict>
+
+If there are no issues at all, respond with the single word: NONE.`
 
 	for _, c := range candidates {
 		userPrompt := fmt.Sprintf(
@@ -469,17 +485,31 @@ If there are contradictions, list each one on a separate line in the format:
 			continue
 		}
 
-		// Parse contradiction lines – each starts with "- CONTRADICTION:".
+		// Parse response lines.
+		// - CONTRADICTION: factual conflict → warning
+		// - POLYSEMY: same name, different entities → info
 		for _, line := range strings.Split(content, "\n") {
 			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "- CONTRADICTION:") {
-				desc := strings.TrimPrefix(line, "- CONTRADICTION:")
+			if desc, ok := strings.CutPrefix(line, "- CONTRADICTION:"); ok {
 				desc = strings.TrimSpace(desc)
 				if desc != "" {
 					issues = append(issues, Issue{
 						Severity:    SeverityWarning,
 						Check:       CheckContradiction,
 						Title:       fmt.Sprintf("Contradiction between %s and %s", c.pageA.Title, c.pageB.Title),
+						Detail:      desc,
+						Page:        c.pageA.Path,
+						RelatedPage: c.pageB.Path,
+					})
+				}
+			}
+			if desc, ok := strings.CutPrefix(line, "- POLYSEMY:"); ok {
+				desc = strings.TrimSpace(desc)
+				if desc != "" {
+					issues = append(issues, Issue{
+						Severity:    SeverityInfo,
+						Check:       CheckContradiction,
+						Title:       fmt.Sprintf("Polysemy: %s and %s share a term", c.pageA.Title, c.pageB.Title),
 						Detail:      desc,
 						Page:        c.pageA.Path,
 						RelatedPage: c.pageB.Path,
