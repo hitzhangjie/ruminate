@@ -80,6 +80,56 @@ func (g *Git) RepoPath() string {
 	return g.repoPath
 }
 
+// HeadSHA returns the SHA of the current HEAD commit.
+func (g *Git) HeadSHA() (string, error) {
+	out, err := g.runOutput("rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// DiffNameStatus runs git diff --name-status between base and head commits.
+// Returns a slice of [status, filename] pairs, e.g. ["A", "newfile.md"].
+func (g *Git) DiffNameStatus(base, head string) ([][2]string, error) {
+	out, err := g.runOutput("diff", "--name-status", base, head)
+	if err != nil {
+		return nil, fmt.Errorf("git diff --name-status %s..%s: %w", base, head, err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var results [][2]string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		results = append(results, [2]string{parts[0], parts[1]})
+	}
+	return results, nil
+}
+
+// ListFiles returns all tracked files in the repository (git ls-files).
+func (g *Git) ListFiles() ([]string, error) {
+	out, err := g.runOutput("ls-files")
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var files []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
 // run executes a git command with the given arguments.
 func (g *Git) run(args ...string) error {
 	cmd := exec.Command("git", args...)
@@ -90,6 +140,17 @@ func (g *Git) run(args ...string) error {
 		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+// runOutput executes a git command and returns its stdout as a string.
+func (g *Git) runOutput(args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = g.repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return string(out), nil
 }
 
 // gitDir returns the path to the .git directory.

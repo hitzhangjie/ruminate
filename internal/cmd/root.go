@@ -31,6 +31,8 @@ func init() {
 	rootCmd.AddCommand(lintCmd)
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(syncCmd)
+	rootCmd.AddCommand(hookCmd)
 }
 
 // exitWithError prints an error message and exits with code 1.
