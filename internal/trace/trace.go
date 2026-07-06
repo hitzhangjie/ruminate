@@ -46,7 +46,7 @@ func New(enabled bool) *Tracer {
 	if !enabled {
 		return &Tracer{enabled: false}
 	}
-	root := &Span{Name: "pipeline", Start: time.Now()}
+	root := &Span{Name: "Pipeline", Start: time.Now()}
 	return &Tracer{
 		enabled: true,
 		root:    root,
@@ -130,7 +130,7 @@ func (t *Tracer) Flush(w io.Writer) {
 		return
 	}
 	t.root.Elapsed = time.Since(t.root.Start)
-	writeTree(w, t.root, "")
+	writeTree(w, t.root)
 }
 
 // formatAttrs converts alternating key-value pairs to "key=value" strings.
@@ -150,8 +150,7 @@ func formatAttrs(attrs []any) []string {
 }
 
 // writeTree writes the root span and its children as a tree.
-func writeTree(w io.Writer, s *Span, prefix string) {
-	connector := "── "
+func writeTree(w io.Writer, s *Span) {
 	attrStr := ""
 	if len(s.Attrs) > 0 {
 		attrStr = "  " + strings.Join(s.Attrs, " ")
@@ -160,8 +159,9 @@ func writeTree(w io.Writer, s *Span, prefix string) {
 	if s.Elapsed > 0 && s.Name != "pipeline" {
 		duration = fmt.Sprintf("  %v", s.Elapsed.Round(time.Millisecond))
 	}
-	fmt.Fprintf(w, "%s%s%s%s%s\n", prefix, connector, s.Name, duration, attrStr)
+	fmt.Fprintf(w, "\n%s:%s%s\n", s.Name, duration, attrStr)
 
+	prefix := ""
 	for i, child := range s.Children {
 		isLast := i == len(s.Children)-1
 		writeTreeNode(w, child, prefix, isLast)
