@@ -11,9 +11,10 @@ import (
 
 // AskOptions controls AI question-answering behavior.
 type AskOptions struct {
-	TopN     int  // Number of diverse search results to use as LLM context.
-	Save     bool // Save the Q&A result as a wiki synthesis page.
-	NoStream bool // Disable streaming output.
+	TopN     int               // Number of diverse search results to use as LLM context.
+	Save     bool              // Save the Q&A result as a wiki synthesis page.
+	NoStream bool              // Disable streaming output.
+	Effort   wiki.SearchEffort // Query expansion effort level (fast/balanced/thorough).
 }
 
 // AskResult is the final result of an AI Q&A request.
@@ -44,21 +45,25 @@ const DefaultTopN = 20
 func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*AskResult, error) {
 	topN := DefaultTopN
 	save := false
+	effort := wiki.SearchEffortFast
 	if opts != nil {
 		if opts.TopN > 0 {
 			topN = opts.TopN
 		}
 		save = opts.Save
+		if opts.Effort != "" {
+			effort = opts.Effort
+		}
 	}
 
 	if e.tracer != nil {
 		e.tracer.Begin("ask", "provider", e.llmCfg.Provider, "model", e.llmCfg.Model,
-			"query", question, "topN", topN)
+			"query", question, "topN", topN, "effort", string(effort))
 		defer e.tracer.End("saved", save)
 	}
 
 	// 1. Search for relevant pages
-	sources, err := e.retrieveContext(ctx, question, topN)
+	sources, err := e.retrieveContext(ctx, question, topN, effort)
 	if err != nil {
 		if e.tracer != nil {
 			e.tracer.Error(err)
@@ -130,21 +135,25 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOptions) (<-chan AskChunk, error) {
 	topN := DefaultTopN
 	save := false
+	effort := wiki.SearchEffortFast
 	if opts != nil {
 		if opts.TopN > 0 {
 			topN = opts.TopN
 		}
 		save = opts.Save
+		if opts.Effort != "" {
+			effort = opts.Effort
+		}
 	}
 
 	if e.tracer != nil {
 		e.tracer.Begin("ask", "provider", e.llmCfg.Provider, "model", e.llmCfg.Model,
-			"query", question, "topN", topN)
+			"query", question, "topN", topN, "effort", string(effort))
 		defer e.tracer.End("saved", save)
 	}
 
 	// 1. Search for relevant pages
-	sources, err := e.retrieveContext(ctx, question, topN)
+	sources, err := e.retrieveContext(ctx, question, topN, effort)
 	if err != nil {
 		if e.tracer != nil {
 			e.tracer.Error(err)
@@ -230,8 +239,8 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 }
 
 // retrieveContext searches the wiki for pages relevant to the question.
-func (e *Engine) retrieveContext(ctx context.Context, question string, topN int) ([]Source, error) {
-	results, err := e.wiki.Search(ctx, question, topN)
+func (e *Engine) retrieveContext(ctx context.Context, question string, topN int, effort wiki.SearchEffort) ([]Source, error) {
+	results, err := e.wiki.Search(ctx, question, topN, effort)
 	if err != nil {
 		return nil, err
 	}

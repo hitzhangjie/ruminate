@@ -61,6 +61,40 @@ for i, r := range ftsResults {
 }
 ```
 
+#### RRF（Reciprocal Rank Fusion）
+
+RRF 是一种融合多个排序列表的经典算法，用于将不同来源的搜索结果（向量搜索、FTS、多查询变体）合并为统一的排序。
+
+**公式**：
+
+```
+RRF_score(d) = Σ 1 / (k + rank_i(d))
+```
+
+- `k` 是常数（通常取 60），防止除以零并平滑高排名项的影响
+- `rank_i(d)` 是文档 `d` 在第 `i` 个排序列表中的排名（1-based）
+- 文档在多个列表中出现时，各路的 RRF 分值累加
+
+**为什么用 RRF 而不是分数直接加权**：
+
+不同搜索来源的原始分数尺度不统一（cosine similarity 在 [0,1]，BM25 无上界），直接加权需要归一化且对异常值敏感。RRF 只关心排名，天然规避了跨来源分数尺度不一致的问题。
+
+**在当前管线中的用途**：
+
+| 位置 | 函数 | 用途 |
+|------|------|------|
+| [manager.go:790](internal/wiki/manager.go#L790) | `rrfFuseFull` | FTS 结果作为 booster 融入向量搜索结果 |
+| [expansion.go:191](internal/wiki/expansion.go#L191) | `rrfFuseMultiQuery` | 多个 query 变体的向量搜索结果融合 |
+
+**直观示例**（多查询融合）：
+
+| 排名 | q1 结果 | q2 结果 | q3 结果 |
+|------|---------|---------|---------|
+| 1 | Doc A | Doc A | Doc B |
+| 2 | Doc B | Doc C | Doc D |
+
+Doc A 在 q1 和 q2 中都排第 1，RRF 分数最高（两路命中）；Doc B 在 q1 排第 2、q3 排第 1，次之。最终排序：A > B > C > D。
+
 #### MMR 多样化
 
 MMR (Maximal Marginal Relevance) 迭代选择既与 query 相关、又与已选结果不相似的结果：
@@ -109,6 +143,46 @@ MMR 保证了多样性，但 RRF 分数（cosine + keyword boost 的融合）对
 Vector search (200) → FTS boosting (RRF) → MMR diversity (50) → LLM Rerank → Truncate (topN)
 ```
 
+### 问题 6：Query Expansion / HyDE ✅ 已实现
+
+用户提问方式与文档写法之间存在词汇鸿沟（"透明巨页" vs "THP"）和语体鸿沟（疑问句 vs 陈述句）。引入 Query Expansion 和 HyDE 两种查询改写技术，通过 `--effort` flag 控制：
+
+**Effort 级别**：
+
+| Level | 技术 | LLM 调用 | 延迟 | 适用场景 |
+|-------|------|---------|------|---------|
+| `fast` | 无（直接搜索） | 0 | 最低 | 术语匹配良好、对延迟敏感 |
+| `balanced` | Query Expansion | 1次 | 中 | 用户用词与文档术语不一致 |
+| `thorough` | HyDE | 1次 | 较高 | 问题是疑问句、文档是陈述句 |
+
+**Query Expansion (balanced)**：
+- LLM 将原始 query 改写为 2-3 个不同角度的变体
+- 每个变体独立做向量搜索，结果通过 RRF 融合
+- 原始 query 始终参与搜索，确保不丢失原始意图
+
+**HyDE (thorough)**：
+- LLM 生成一篇假设答案文档（Hypothetical Document）
+- 用假设文档的 embedding 代替原始 query embedding 做向量搜索
+- 假设文档的陈述风格 embedding 更接近真实文档的分布
+
+**降级策略**：
+- LLM provider 不可用时：自动降级到 `fast`
+- expansion/HyDE 调用失败时：fallback 到原始 query 的搜索结果
+- 与 rerank 一致：best-effort，不阻塞搜索
+
+**使用方式**：
+```bash
+ruminate ask --effort fast "Go GC 如何适应透明巨页"      # 基准行为
+ruminate ask --effort balanced "Go GC 如何适应透明巨页"   # 查询扩展
+ruminate ask --effort thorough "Go GC 如何适应透明巨页"   # HyDE
+```
+
+```
+[effort=balanced]  Query → LLM expand → [q1,q2,q3] → 3×vector search → RRF merge → FTS boost → MMR → Rerank → topN
+[effort=thorough]  Query → LLM hypo doc → embed(hypo) → vector search → FTS boost → MMR → Rerank → topN
+[effort=fast]      Query → embed(query) → vector search → FTS boost → MMR → Rerank → topN
+```
+
 ### 问题 4：召回池太小，且与 topN 耦合 ✅ 已修复
 
 - 向量召回从 `topN*2` 改为固定 200 条（与 topN 解耦）
@@ -125,7 +199,7 @@ Vector search (200) → FTS boosting (RRF) → MMR diversity (50) → LLM Rerank
 | P0 | FTS 改为纯 boosting | ✅ |
 | P0 | MMR 多样化（λ=0.5） | ✅ |
 | P1 | 引入 Rerank 阶段 | ✅ |
-| P1 | Query Expansion / HyDE | 待定 |
+| P1 | Query Expansion / HyDE | ✅ 已实现（通过 `--effort` 控制） |
 | P2 | Small-to-big 检索 | 待定 |
 | P2 | Iterative Retrieval | 待定 |
 | P3 | 多路召回扩展 | 待定 |
@@ -134,16 +208,13 @@ Vector search (200) → FTS boosting (RRF) → MMR diversity (50) → LLM Rerank
 
 | 文件 | 改动说明 |
 | ---- | -------- |
-| `internal/cmd/ask.go` | `--top-n` 默认值 5→20，描述更新为 LLM context |
-| `internal/query/asker.go` | 新增 `DefaultTopN = 20` 常量；`Ask`/`AskStream` 使用常量作为 fallback |
-| `internal/wiki/index.go` | 新增 `scoredResult` 内部类型；新增 `searchByVectorWithMeta` 方法 |
-| `internal/wiki/manager.go` | 改写 `hybridSearch`：固定召回 200、MMR target 50、截断到 topN；`rrfFuse` 保持纯 boosting；新增 `rrfFuseFull` |
-| `internal/wiki/mmr.go` | **新文件** — MMR 多样化算法实现 |
-| `internal/wiki/mmr_test.go` | **新文件** — 6 个 MMR 测试用例 |
-| `internal/wiki/rerank.go` | **新文件** — LLM listwise rerank 实现 |
-| `internal/wiki/rerank_test.go` | **新文件** — 10 个 rerank 测试用例 |
-| `internal/wiki/search_test.go` | 更新 3 个 RRF 测试用例匹配新语义 |
-| `docs/search-optimization.md` | 搜索优化方案文档 |
+| `internal/cmd/ask.go` | 新增 `--effort` flag，默认 `fast`；新增 `parseEffort` |
+| `internal/cmd/find.go` | `Search` 调用传入 `SearchEffortFast` |
+| `internal/query/asker.go` | `AskOptions` 新增 `Effort` 字段；`retrieveContext` 透传 effort |
+| `internal/wiki/expansion.go` | **新文件** — Query Expansion、HyDE、RRF 多查询融合实现 |
+| `internal/wiki/expansion_test.go` | **新文件** — 15 个 expansion/HyDE 测试用例 |
+| `internal/wiki/manager.go` | `Search`/`hybridSearch` 方法签名新增 `effort` 参数；hybridSearch 集成 expansion/HyDE |
+| `docs/search-optimization.md` | 查询扩展状态更新，补充 effort level 文档 |
 
 ## 参考
 

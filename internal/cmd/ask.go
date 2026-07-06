@@ -10,12 +10,14 @@ import (
 
 	"github.com/hitzhangjie/ruminate/internal/query"
 	"github.com/hitzhangjie/ruminate/internal/trace"
+	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
 var (
 	askSave     bool
 	askNoStream bool
 	askTopN     int
+	askEffort   string
 )
 
 var askCmd = &cobra.Command{
@@ -57,10 +59,12 @@ Examples:
 		engine.SetTracer(tr)
 		defer tr.Flush(os.Stderr)
 
+		effort := parseEffort(askEffort)
 		opts := &query.AskOptions{
 			TopN:     askTopN,
 			Save:     askSave,
 			NoStream: askNoStream,
+			Effort:   effort,
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -85,6 +89,20 @@ func init() {
 	askCmd.Flags().BoolVar(&askSave, "save", false, "Save the Q&A result as a wiki synthesis page")
 	askCmd.Flags().BoolVar(&askNoStream, "no-stream", false, "Disable streaming output (wait for full answer)")
 	askCmd.Flags().IntVarP(&askTopN, "top-n", "n", query.DefaultTopN, "Number of diverse search results to use as LLM context")
+	askCmd.Flags().StringVar(&askEffort, "effort", "fast", "Search effort level: fast (no expansion), balanced (query expansion), thorough (HyDE)")
+}
+
+// parseEffort converts a CLI effort string to a wiki.SearchEffort value.
+// Unknown values default to SearchEffortFast.
+func parseEffort(s string) wiki.SearchEffort {
+	switch s {
+	case "balanced":
+		return wiki.SearchEffortBalanced
+	case "thorough":
+		return wiki.SearchEffortThorough
+	default:
+		return wiki.SearchEffortFast
+	}
 }
 
 // runAskNonStream performs a blocking ask and prints the full answer at once.

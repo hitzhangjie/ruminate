@@ -523,11 +523,11 @@ func (m *Manager) Close() error {
 //
 // This is the primary search entry point for both simple lookups (find command)
 // and context retrieval for AI-powered Q&A (ask command).
-func (m *Manager) Search(ctx context.Context, query string, topN int) ([]SearchResult, error) {
+func (m *Manager) Search(ctx context.Context, query string, topN int, effort SearchEffort) ([]SearchResult, error) {
 	m.ensureComponents()
 
 	if m.embedder != nil {
-		return m.hybridSearch(ctx, query, topN)
+		return m.hybridSearch(ctx, query, topN, effort)
 	}
 	return m.ftsWithFallback(query, topN)
 }
@@ -554,14 +554,46 @@ func (m *Manager) Search(ctx context.Context, query string, topN int) ([]SearchR
 //     MMR selects.
 //  6. If vector search fails entirely (embedder down, no vectors indexed),
 //     we fall back to the full FTS pipeline (AND → OR).
-func (m *Manager) hybridSearch(ctx context.Context, query string, topN int) ([]SearchResult, error) {
+func (m *Manager) hybridSearch(ctx context.Context, query string, topN int, effort SearchEffort) ([]SearchResult, error) {
 	if m.tracer != nil {
-		m.tracer.Begin("search", "query", query, "topN", topN, "strategy", "hybrid")
+		m.tracer.Begin("search", "query", query, "topN", topN, "strategy", "hybrid", "effort", string(effort))
 		defer m.tracer.End()
 	}
 
+	// Step 0: Query expansion / HyDE (effort-dependent).
+	// These are best-effort — on failure, fall back to the original query.
+	searchQuery := query
+	switch effort {
+	case SearchEffortBalanced:
+		variants, err := expandQueries(ctx, m.llmProvider, query)
+		if err == nil && len(variants) > 1 {
+			if m.tracer != nil {
+				m.tracer.Begin("expand", "variants", len(variants))
+				m.tracer.End()
+			}
+			// Multi-query search: embed each variant, search, RRF-merge results.
+			return m.multiQuerySearch(ctx, variants, topN)
+		}
+		if m.tracer != nil {
+			m.tracer.Begin("expand")
+			m.tracer.End("fallback", "original_query")
+		}
+	case SearchEffortThorough:
+		hypoDoc, err := generateHypotheticalDoc(ctx, m.llmProvider, query)
+		if err == nil && hypoDoc != "" {
+			searchQuery = hypoDoc
+			if m.tracer != nil {
+				m.tracer.Begin("hyde", "doc_len", len(hypoDoc))
+				m.tracer.End()
+			}
+		} else if m.tracer != nil {
+			m.tracer.Begin("hyde")
+			m.tracer.End("fallback", "original_query")
+		}
+	}
+
 	// Step 1: Vector search with large fixed recall pool (200).
-	queryVec, embErr := m.embedder.EmbedQuery(ctx, query)
+	queryVec, embErr := m.embedder.EmbedQuery(ctx, searchQuery)
 	if embErr != nil {
 		if m.tracer != nil {
 			m.tracer.Begin("vector")

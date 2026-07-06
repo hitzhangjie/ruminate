@@ -52,7 +52,7 @@ Examples:
 
 		// Search using hybrid retrieval when embedder is available, FTS5 otherwise
 		ctx := context.Background()
-		results, err := mgr.Search(ctx, keywords, findLimit)
+		results, err := mgr.Search(ctx, keywords, findLimit, wiki.SearchEffortFast)
 		if err != nil {
 			return fmt.Errorf("search failed: %w", err)
 		}
