@@ -202,7 +202,7 @@ ruminate ask --effort thorough "Go GC 如何适应透明巨页"   # HyDE
 | P1 | Query Expansion / HyDE | ✅ 已实现（通过 `--effort` 控制） |
 | P2 | Small-to-big 检索 | 待定 |
 | P2 | Iterative Retrieval | ✅ 已实现（通过 Query Expansion + HyDE，eager 并行多路召回，见 [iterative-retrieval.md](iterative-retrieval.md)） |
-| P3 | 多路召回扩展 | 待定 |
+| P3 | 多路召回扩展 | ✅ 已实现（通过 Query Expansion 多变体并行召回 + HyDE，本质已是多路召回融合，见 [iterative-retrieval.md](iterative-retrieval.md)） |
 
 ## 文件变更记录
 
