@@ -19,9 +19,12 @@ const maxPreviewChars = 300
 // candidates. It issues a single Chat call asking the model to reorder the
 // documents by relevance to the query, then returns the reordered slice.
 //
-// On any failure (LLM unavailable, network error, unparseable response), the
-// original candidate order is returned unchanged — rerank is a best-effort
-// precision improvement, never a hard dependency.
+// Candidates that the LLM omits from its ranking are considered irrelevant
+// and are discarded — the returned slice may be shorter than the input.
+//
+// On any failure (LLM unavailable, network error, unparseable response,
+// empty ranking), the original candidate order is returned unchanged —
+// rerank is a best-effort precision improvement, never a hard dependency.
 func (m *Manager) rerankWithLLM(ctx context.Context, query string, candidates []SearchResult) []SearchResult {
 	if m.llmProvider == nil || len(candidates) <= 1 {
 		return candidates
@@ -49,9 +52,8 @@ func (m *Manager) rerankWithLLM(ctx context.Context, query string, candidates []
 	}
 
 	// Reorder candidates according to the LLM ranking.
-	// Build a set of IDs we've already placed, so we can append any
-	// missing ones at the end (LLM might skip some).
-	reordered := make([]SearchResult, 0, len(candidates))
+	// Candidates the LLM omits are considered irrelevant and discarded.
+	reordered := make([]SearchResult, 0, len(rankedIDs))
 	placed := make(map[int]bool, len(rankedIDs))
 
 	for _, id := range rankedIDs {
@@ -60,14 +62,6 @@ func (m *Manager) rerankWithLLM(ctx context.Context, query string, candidates []
 		if id >= 0 && id < len(candidates) && !placed[id] {
 			reordered = append(reordered, candidates[id])
 			placed[id] = true
-		}
-	}
-
-	// Append any candidates the LLM didn't mention (at end, preserving
-	// their relative MMR order).
-	for i := range candidates {
-		if !placed[i] {
-			reordered = append(reordered, candidates[i])
 		}
 	}
 
@@ -153,6 +147,10 @@ rank the documents by how relevant they are to the query.
 
 Consider which documents best answer the query, contain the most relevant
 information, and are most useful to the user.
+
+IMPORTANT: Only include documents that are genuinely relevant to the query.
+Omit any document that is not relevant enough to help answer the query.
+If no documents are relevant, return an empty list.
 
 Output your ranking as a JSON object with a single key "ranked_ids" containing
 an array of document numbers in order of relevance (most relevant first).

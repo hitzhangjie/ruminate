@@ -41,6 +41,10 @@ func makeTestCandidates(n int) []SearchResult {
 	return candidates
 }
 
+// ---------------------------------------------------------------------------
+// parseRerankResponse tests — pure function, no external dependencies
+// ---------------------------------------------------------------------------
+
 func TestParseRerankResponse_Normal(t *testing.T) {
 	response := `{"ranked_ids": [3, 1, 5, 2, 4]}`
 	ids, err := parseRerankResponse(response, 5)
@@ -148,142 +152,9 @@ func TestParseRerankResponse_DuplicateIDs(t *testing.T) {
 	}
 }
 
-func TestRerankWithLLM_SuccessfulRerank(t *testing.T) {
-	candidates := makeTestCandidates(5)
-
-	mgr := &Manager{
-		llmProvider: &mockLLMProvider{
-			chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
-				// Reverse order: doc E first, doc A last
-				return &llm.ChatResponse{Content: `{"ranked_ids": [5, 4, 3, 2, 1]}`}, nil
-			},
-		},
-	}
-
-	got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
-	if len(got) != 5 {
-		t.Fatalf("expected 5 results, got %d", len(got))
-	}
-
-	// After rerank, first should be doc E (reversed)
-	if got[0].Path != "e.md" {
-		t.Errorf("expected e.md first (reversed), got %s", got[0].Path)
-	}
-	if got[4].Path != "a.md" {
-		t.Errorf("expected a.md last (reversed), got %s", got[4].Path)
-	}
-
-	// Ranks should be updated to 1-based position
-	for i, r := range got {
-		if r.Rank != float64(i+1) {
-			t.Errorf("position %d: expected rank %d, got %v", i, i+1, r.Rank)
-		}
-	}
-}
-
-func TestRerankWithLLM_NilProvider(t *testing.T) {
-	candidates := makeTestCandidates(5)
-	mgr := &Manager{llmProvider: nil}
-
-	got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
-	if len(got) != 5 {
-		t.Fatalf("expected 5 results, got %d", len(got))
-	}
-	// Order should be unchanged
-	for i, r := range got {
-		if r.Rank != float64(i+1) {
-			t.Errorf("position %d: expected unchanged rank %v, got %v", i, i+1, r.Rank)
-		}
-	}
-}
-
-func TestRerankWithLLM_SingleCandidate(t *testing.T) {
-	candidates := makeTestCandidates(1)
-	called := false
-	mgr := &Manager{
-		llmProvider: &mockLLMProvider{
-			chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
-				called = true
-				return &llm.ChatResponse{Content: `{"ranked_ids": [1]}`}, nil
-			},
-		},
-	}
-
-	got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(got))
-	}
-	if called {
-		t.Error("LLM should not be called for single candidate")
-	}
-}
-
-func TestRerankWithLLM_LLMErrorFallback(t *testing.T) {
-	candidates := makeTestCandidates(5)
-	mgr := &Manager{
-		llmProvider: &mockLLMProvider{
-			chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
-				return nil, context.DeadlineExceeded
-			},
-		},
-	}
-
-	got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
-	if len(got) != 5 {
-		t.Fatalf("expected 5 results on error fallback, got %d", len(got))
-	}
-	// Should preserve original order on error
-	for i, r := range got {
-		if r.Rank != float64(i+1) {
-			t.Errorf("expected unchanged rank on error, position %d got %v", i, r.Rank)
-		}
-	}
-}
-
-func TestRerankWithLLM_UnparseableResponse(t *testing.T) {
-	candidates := makeTestCandidates(5)
-	mgr := &Manager{
-		llmProvider: &mockLLMProvider{
-			chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
-				return &llm.ChatResponse{Content: "I'm not sure, they all look relevant"}, nil
-			},
-		},
-	}
-
-	got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
-	if len(got) != 5 {
-		t.Fatalf("expected 5 results on unparseable response, got %d", len(got))
-	}
-}
-
-func TestRerankWithLLM_MissingIDs(t *testing.T) {
-	candidates := makeTestCandidates(5)
-	mgr := &Manager{
-		llmProvider: &mockLLMProvider{
-			chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
-				// Only rank 3 of 5 candidates
-				return &llm.ChatResponse{Content: `{"ranked_ids": [3, 1, 5]}`}, nil
-			},
-		},
-	}
-
-	got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
-	if len(got) != 5 {
-		t.Fatalf("expected 5 results (missing IDs appended), got %d", len(got))
-	}
-
-	// First three should be the ranked ones: docs at positions 2, 0, 4 (0-based)
-	if got[0].Path != "c.md" {
-		t.Errorf("expected c.md (id=3) first, got %s", got[0].Path)
-	}
-	if got[1].Path != "a.md" {
-		t.Errorf("expected a.md (id=1) second, got %s", got[1].Path)
-	}
-	if got[2].Path != "e.md" {
-		t.Errorf("expected e.md (id=5) third, got %s", got[2].Path)
-	}
-	// Docs 2 and 4 (b.md, d.md) not in ranked_ids, should be appended after
-}
+// ---------------------------------------------------------------------------
+// buildRerankPrompt / getContentPreview tests — pure functions
+// ---------------------------------------------------------------------------
 
 func TestBuildRerankPrompt(t *testing.T) {
 	// Create a minimal Manager with a wiki root that doesn't exist on disk.
@@ -337,50 +208,194 @@ func TestGetContentPreview(t *testing.T) {
 	}
 }
 
-func TestRerankIntegration_RerankStepPresent(t *testing.T) {
-	// Verify that when LLM is available, hybridSearch calls rerank.
-	// We use a mock that returns a predictable order reversal, then
-	// verify the final results are in the expected order.
+// ---------------------------------------------------------------------------
+// TestRerankWithLLM_Mock — rerankWithLLM tests using mockLLMProvider
+// ---------------------------------------------------------------------------
+//
+// These tests verify client-side correctness of rerankWithLLM:
+// prompt construction, response parsing, error handling, candidate
+// filtering, and rank updates. They use mockLLMProvider to simulate
+// LLM responses without requiring a real LLM backend.
+//
+// For integration tests with a real LLM provider (e.g. Ollama), add
+// tests that use the actual provider and verify end-to-end relevance
+// ranking quality.
 
-	// This is a structural test: it verifies the rerank step is wired
-	// into hybridSearch. A full end-to-end test would require embedding
-	// vectors and FTS setup, which is done at the integration level.
+func TestRerankWithLLM_Mock(t *testing.T) {
 
-	// Create candidates manually and verify rerankWithLLM works as expected
-	// with the mock — the integration test for hybridSearch itself
-	// is implicitly covered by TestRerankWithLLM_* tests above.
+	t.Run("SuccessfulRerank", func(t *testing.T) {
+		candidates := makeTestCandidates(5)
 
-	candidates := makeTestCandidates(5)
-
-	called := false
-	mgr := &Manager{
-		llmProvider: &mockLLMProvider{
-			chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
-				called = true
-				// Verify prompt contains expected structure
-				userMsg := messages[1].Content
-				if !contains(userMsg, "Rank the documents by relevance") {
-					t.Error("prompt should contain ranking instruction")
-				}
-				if !contains(userMsg, "Title: Doc A") {
-					t.Error("prompt should contain candidate titles")
-				}
-				return &llm.ChatResponse{Content: `{"ranked_ids": [5, 4, 3, 2, 1]}`}, nil
+		mgr := &Manager{
+			llmProvider: &mockLLMProvider{
+				chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
+					// Reverse order: doc E first, doc A last
+					return &llm.ChatResponse{Content: `{"ranked_ids": [5, 4, 3, 2, 1]}`}, nil
+				},
 			},
-		},
-	}
+		}
 
-	got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
-	if !called {
-		t.Error("LLM should have been called")
-	}
-	if len(got) != 5 {
-		t.Fatalf("expected 5 results, got %d", len(got))
-	}
-	// With reversed ranking, doc E should be first
-	if got[0].Path != "e.md" {
-		t.Errorf("expected e.md first after rerank, got %s", got[0].Path)
-	}
+		got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
+		if len(got) != 5 {
+			t.Fatalf("expected 5 results, got %d", len(got))
+		}
+
+		// After rerank, first should be doc E (reversed)
+		if got[0].Path != "e.md" {
+			t.Errorf("expected e.md first (reversed), got %s", got[0].Path)
+		}
+		if got[4].Path != "a.md" {
+			t.Errorf("expected a.md last (reversed), got %s", got[4].Path)
+		}
+
+		// Ranks should be updated to 1-based position
+		for i, r := range got {
+			if r.Rank != float64(i+1) {
+				t.Errorf("position %d: expected rank %d, got %v", i, i+1, r.Rank)
+			}
+		}
+	})
+
+	t.Run("NilProvider", func(t *testing.T) {
+		candidates := makeTestCandidates(5)
+		mgr := &Manager{llmProvider: nil}
+
+		got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
+		if len(got) != 5 {
+			t.Fatalf("expected 5 results, got %d", len(got))
+		}
+		// Order should be unchanged
+		for i, r := range got {
+			if r.Rank != float64(i+1) {
+				t.Errorf("position %d: expected unchanged rank %v, got %v", i, i+1, r.Rank)
+			}
+		}
+	})
+
+	t.Run("SingleCandidate", func(t *testing.T) {
+		candidates := makeTestCandidates(1)
+		called := false
+		mgr := &Manager{
+			llmProvider: &mockLLMProvider{
+				chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
+					called = true
+					return &llm.ChatResponse{Content: `{"ranked_ids": [1]}`}, nil
+				},
+			},
+		}
+
+		got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(got))
+		}
+		if called {
+			t.Error("LLM should not be called for single candidate")
+		}
+	})
+
+	t.Run("LLMErrorFallback", func(t *testing.T) {
+		candidates := makeTestCandidates(5)
+		mgr := &Manager{
+			llmProvider: &mockLLMProvider{
+				chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
+					return nil, context.DeadlineExceeded
+				},
+			},
+		}
+
+		got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
+		if len(got) != 5 {
+			t.Fatalf("expected 5 results on error fallback, got %d", len(got))
+		}
+		// Should preserve original order on error
+		for i, r := range got {
+			if r.Rank != float64(i+1) {
+				t.Errorf("expected unchanged rank on error, position %d got %v", i, r.Rank)
+			}
+		}
+	})
+
+	t.Run("UnparseableResponse", func(t *testing.T) {
+		candidates := makeTestCandidates(5)
+		mgr := &Manager{
+			llmProvider: &mockLLMProvider{
+				chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
+					return &llm.ChatResponse{Content: "I'm not sure, they all look relevant"}, nil
+				},
+			},
+		}
+
+		got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
+		if len(got) != 5 {
+			t.Fatalf("expected 5 results on unparseable response, got %d", len(got))
+		}
+	})
+
+	t.Run("MissingIDs", func(t *testing.T) {
+		candidates := makeTestCandidates(5)
+		mgr := &Manager{
+			llmProvider: &mockLLMProvider{
+				chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
+					// Only rank 3 of 5 candidates — unmentioned ones are irrelevant
+					return &llm.ChatResponse{Content: `{"ranked_ids": [3, 1, 5]}`}, nil
+				},
+			},
+		}
+
+		got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
+		if len(got) != 3 {
+			t.Fatalf("expected 3 results (irrelevant IDs discarded), got %d", len(got))
+		}
+
+		// First three should be the ranked ones: docs at positions 2, 0, 4 (0-based)
+		if got[0].Path != "c.md" {
+			t.Errorf("expected c.md (id=3) first, got %s", got[0].Path)
+		}
+		if got[1].Path != "a.md" {
+			t.Errorf("expected a.md (id=1) second, got %s", got[1].Path)
+		}
+		if got[2].Path != "e.md" {
+			t.Errorf("expected e.md (id=5) third, got %s", got[2].Path)
+		}
+		// Docs 2 and 4 (b.md, d.md) not in ranked_ids — discarded as irrelevant
+	})
+
+	t.Run("PromptStructure", func(t *testing.T) {
+		// Verify that the LLM is called with a well-formed prompt containing
+		// ranking instructions and candidate titles.
+
+		candidates := makeTestCandidates(5)
+
+		called := false
+		mgr := &Manager{
+			llmProvider: &mockLLMProvider{
+				chatFunc: func(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
+					called = true
+					// Verify prompt contains expected structure
+					userMsg := messages[1].Content
+					if !contains(userMsg, "Rank the documents by relevance") {
+						t.Error("prompt should contain ranking instruction")
+					}
+					if !contains(userMsg, "Title: Doc A") {
+						t.Error("prompt should contain candidate titles")
+					}
+					return &llm.ChatResponse{Content: `{"ranked_ids": [5, 4, 3, 2, 1]}`}, nil
+				},
+			},
+		}
+
+		got := mgr.rerankWithLLM(context.Background(), "test query", candidates)
+		if !called {
+			t.Error("LLM should have been called")
+		}
+		if len(got) != 5 {
+			t.Fatalf("expected 5 results, got %d", len(got))
+		}
+		// With reversed ranking, doc E should be first
+		if got[0].Path != "e.md" {
+			t.Errorf("expected e.md first after rerank, got %s", got[0].Path)
+		}
+	})
 }
 
 // contains checks if s contains substr (simple helper for test assertions).
