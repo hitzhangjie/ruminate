@@ -299,7 +299,7 @@ func (e *Engine) ingestFile(ctx context.Context, filePath string) error {
 // handleDeletedFile records a deletion event in the wiki log and marks the
 // corresponding summary page with a warning.
 //
-// Per sync-hook-design.md: wiki content is NOT deleted when the source file is
+// Per docs/102-sync-hook-design.md: wiki content is NOT deleted when the source file is
 // removed — extracted knowledge (entities, concepts) may still be referenced by
 // other sources.
 func (e *Engine) handleDeletedFile(sourceFile string) error {

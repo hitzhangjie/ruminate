@@ -108,9 +108,9 @@ ruminate/
 │   ├── tsconfig.json
 │   └── vite.config.ts
 ├── docs/                        # 项目文档
-│   ├── requirements.md
-│   ├── architecture.md
-│   └── tasks.md
+│   ├── 1-requirements.md
+│   ├── 2-architecture.md
+│   └── 3-tasks.md
 ├── testdata/                    # 测试数据
 │   ├── sources/                 # 模拟原始资料
 │   └── wiki/                    # 模拟 Wiki 输出

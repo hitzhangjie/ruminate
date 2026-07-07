@@ -101,6 +101,7 @@ Ruminate 的 iterative retrieval 已经通过 Query Expansion 和 HyDE 实现，
 
 ## 参考
 
-- [搜索优化方案](search-optimization.md) — 完整搜索管线文档
-- [Small-to-Big 检索](small-to-big-retrieval.md) — 小粒度索引、大上下文返回
-- [设计决策与实现考量](tradeoffs.md) — 项目设计取舍记录
+- [搜索优化方案](104-search-optimization.md) — 完整搜索管线文档
+- [Small-to-Big 检索](106-small-to-big-retrieval.md) — 小粒度索引、大上下文返回
+- [Ingest 与 Lint 职责分离](100-ingest-lint-separation.md) — Ingest 与 Lint 职责分离
+- [Wiki 维护模型](101-wiki-maintenance-model.md) — raw 为真相源 vs wiki 为真相源

@@ -12,9 +12,9 @@ Core insight (from [Karpathy's LLM Wiki](llm_wiki.md)): The hard part of maintai
 
 - [README.md](README.md) — project vision and overview (Chinese)
 - [llm_wiki.md](llm_wiki.md) — Karpathy's original LLM Wiki idea (English)
-- [docs/requirements.md](docs/requirements.md) — user needs analysis and consensus
-- [docs/architecture.md](docs/architecture.md) — technical architecture and design decisions
-- [docs/tasks.md](docs/tasks.md) — task breakdown and progress tracking
+- [docs/1-requirements.md](docs/1-requirements.md) — user needs analysis and consensus
+- [docs/2-architecture.md](docs/2-architecture.md) — technical architecture and design decisions
+- [docs/3-tasks.md](docs/3-tasks.md) — task breakdown and progress tracking
 
 ## Tech Stack
 

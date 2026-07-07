@@ -201,8 +201,8 @@ ruminate ask --effort thorough "Go GC 如何适应透明巨页"   # HyDE
 | P1 | 引入 Rerank 阶段 | ✅ |
 | P1 | Query Expansion / HyDE | ✅ 已实现（通过 `--effort` 控制） |
 | P2 | Small-to-big 检索 | 待定 |
-| P2 | Iterative Retrieval | ✅ 已实现（通过 Query Expansion + HyDE，eager 并行多路召回，见 [iterative-retrieval.md](iterative-retrieval.md)） |
-| P3 | 多路召回扩展 | ✅ 已实现（通过 Query Expansion 多变体并行召回 + HyDE，本质已是多路召回融合，见 [iterative-retrieval.md](iterative-retrieval.md)） |
+| P2 | Iterative Retrieval | ✅ 已实现（通过 Query Expansion + HyDE，eager 并行多路召回，见 [105-iterative-retrieval.md](105-iterative-retrieval.md)） |
+| P3 | 多路召回扩展 | ✅ 已实现（通过 Query Expansion 多变体并行召回 + HyDE，本质已是多路召回融合，见 [105-iterative-retrieval.md](105-iterative-retrieval.md)） |
 
 ## 文件变更记录
 
@@ -214,10 +214,10 @@ ruminate ask --effort thorough "Go GC 如何适应透明巨页"   # HyDE
 | `internal/wiki/expansion.go` | **新文件** — Query Expansion、HyDE、RRF 多查询融合实现 |
 | `internal/wiki/expansion_test.go` | **新文件** — 15 个 expansion/HyDE 测试用例 |
 | `internal/wiki/manager.go` | `Search`/`hybridSearch` 方法签名新增 `effort` 参数；hybridSearch 集成 expansion/HyDE |
-| `docs/search-optimization.md` | 查询扩展状态更新，补充 effort level 文档 |
+| `docs/104-search-optimization.md` | 查询扩展状态更新，补充 effort level 文档 |
 
 ## 参考
 
 - [Karpathy's LLM Wiki](llm_wiki.md) — 项目原始灵感
-- [项目需求文档](requirements.md)
-- [技术架构文档](architecture.md)
+- [项目需求文档](1-requirements.md)
+- [技术架构文档](2-architecture.md)

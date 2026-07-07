@@ -24,7 +24,7 @@
 
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
-| 0.1 | Go 项目初始化：go mod, 目录结构, Makefile | ✅ | — | 见 [architecture.md](architecture.md) 目录结构 |
+| 0.1 | Go 项目初始化：go mod, 目录结构, Makefile | ✅ | — | 见 [2-architecture.md](2-architecture.md) 目录结构 |
 | 0.2 | CLI 框架：cobra 子命令 (ingest/ask/find/lint/serve/config) | ✅ | — | 命令注册 + 占位实现 |
 | 0.3 | 配置系统：YAML 配置文件，LLM provider/Wiki 路径等 | ✅ | — | 默认配置 + 配置文件查找 |
 | 0.4 | Git 工具封装：init/add/commit/log | ✅ | — | 基于 os/exec |
@@ -132,7 +132,7 @@
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
 | 6.1 | 增量重建：`ruminate rebuild` 从头重建 Wiki | ⬜ | — | 从 raw/ 重新处理所有源 |
-| 6.2 | ~~Small-to-Big 检索~~ | 🗑️ | — | 评估后不适用，见 [docs/small-to-big-retrieval.md](docs/small-to-big-retrieval.md) |
+| 6.2 | ~~Small-to-Big 检索~~ | 🗑️ | — | 评估后不适用，见 [docs/106-small-to-big-retrieval.md](docs/106-small-to-big-retrieval.md) |
 | 6.3 | 向量检索：embedding + 本地向量存储，语义搜索 | ⬜ | — | 评估 LanceDB / Chroma |
 | 6.4 | 多 Provider 支持：DeepSeek、OpenAI 兼容接口 | ⬜ | — | 推理和嵌入可独立配置 |
 | 6.5 | 高级输出格式：Marp 幻灯片、图表导出 | ⬜ | — | |
