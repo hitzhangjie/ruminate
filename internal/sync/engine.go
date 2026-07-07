@@ -138,7 +138,7 @@ func (e *Engine) Sync(ctx context.Context) (*SyncResult, error) {
 	result := &SyncResult{SourceRepo: e.sourceRepo}
 
 	git := gitwrap.New(e.sourceRepo)
-	if !git.IsRepo() {
+	if !git.IsGitRepo() {
 		return nil, fmt.Errorf("%s is not a git repository", e.sourceRepo)
 	}
 

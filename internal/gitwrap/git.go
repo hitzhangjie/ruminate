@@ -69,8 +69,8 @@ func (g *Git) Log(n int) ([]CommitInfo, error) {
 	return parseLogOutput(string(out))
 }
 
-// IsRepo returns true if repoPath is inside a git repository.
-func (g *Git) IsRepo() bool {
+// IsGitRepo returns true if repoPath is inside a git repository.
+func (g *Git) IsGitRepo() bool {
 	_, err := os.Stat(g.gitDir())
 	return err == nil
 }

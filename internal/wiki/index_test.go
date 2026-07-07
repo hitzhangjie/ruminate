@@ -401,3 +401,242 @@ func TestVectorStoreSearchDelete(t *testing.T) {
 		}
 	}
 }
+
+
+func TestIsCJK(t *testing.T) {
+	tests := []struct {
+		name string
+		r    rune
+		want bool
+	}{
+		{"Chinese hanzi", '汉', true},
+		{"hiragana", 'あ', true},
+		{"katakana", 'ア', true},
+		{"hangul", '한', true},
+		{"ASCII letter", 'a', false},
+		{"digit", '1', false},
+		{"space", ' ', false},
+		{"punctuation", '.', false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isCJK(tt.r)
+			if got != tt.want {
+				t.Errorf("isCJK(%c) = %v, want %v", tt.r, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractCJKBigrams(t *testing.T) {
+	tests := []struct {
+		name  string
+		text  string
+		count int
+	}{
+		{"CJK run with bigrams", "Go垃圾回收机制", 5},
+		{"no CJK characters", "hello world", 0},
+		{"single CJK char", "中", 0},
+		{"mixed CJK and ASCII", "English中文test", 1},
+		{"two separate CJK runs", "你好 world 世界", 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractCJKBigrams(tt.text)
+			if len(got) != tt.count {
+				t.Errorf("extractCJKBigrams(%q) = %v (len=%d), want %d bigrams", tt.text, got, len(got), tt.count)
+			}
+		})
+	}
+}
+
+func TestExtractCJKBigrams_Content(t *testing.T) {
+	got := extractCJKBigrams("内存管理")
+	if len(got) != 3 {
+		t.Fatalf("expected 3 bigrams, got %d: %v", len(got), got)
+	}
+	if got[0] != "内存" {
+		t.Errorf("first bigram = %q, want %q", got[0], "内存")
+	}
+	if got[1] != "存管" {
+		t.Errorf("second bigram = %q, want %q", got[1], "存管")
+	}
+	if got[2] != "管理" {
+		t.Errorf("third bigram = %q, want %q", got[2], "管理")
+	}
+}
+
+func TestIsBigramSoup(t *testing.T) {
+	tests := []struct {
+		name     string
+		snippet  string
+		expected bool
+	}{
+		{
+			name:     "CJK bigrams only",
+			snippet:  "内存 存管 管理 理之 之透 透明 明巨",
+			expected: true,
+		},
+		{
+			name:     "CJK bigrams with highlight tags",
+			snippet:  "<b>内存</b> 存管 <b>管理</b> 理之 透明 明巨 巨页",
+			expected: true,
+		},
+		{
+			name:     "markdown content with heading",
+			snippet:  "## Summary\n\nThis is content",
+			expected: false,
+		},
+		{
+			name:     "short string",
+			snippet:  "ab",
+			expected: false,
+		},
+		{
+			name:     "ASCII letters",
+			snippet:  "hello world test content here",
+			expected: false,
+		},
+		{
+			name:     "mixed meaningful markers",
+			snippet:  "[link](target) and some 中文 文本",
+			expected: false,
+		},
+		{
+			name:     "empty string",
+			snippet:  "",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isBigramSoup(tt.snippet)
+			if got != tt.expected {
+				t.Errorf("isBigramSoup(%q) = %v, want %v", tt.snippet, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCleanSnippet(t *testing.T) {
+	tests := []struct {
+		name    string
+		snippet string
+		want    string
+	}{
+		{
+			name:    "plain snippet",
+			snippet: "This is a normal snippet with content",
+			want:    "This is a normal snippet with content",
+		},
+		{
+			name:    "truncate at bigram separator",
+			snippet: "Useful content\n\n<!-- bigram-index -->\n\n内存 存管 管理",
+			want:    "Useful content",
+		},
+		{
+			name:    "bigram soup returns empty",
+			snippet: "内存 存管 管理 理之 之透 透明 明巨 巨页 页源 源代 代码",
+			want:    "",
+		},
+		{
+			name:    "partial separator remnant",
+			snippet: "text <!-- bigram-index",
+			want:    "text",
+		},
+		{
+			name:    "trailing separator fragment",
+			snippet: "text bigram-index -->",
+			want:    "text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CleanSnippet(tt.snippet)
+			if got != tt.want {
+				t.Errorf("CleanSnippet(%q) = %q, want %q", tt.snippet, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnrichContentWithBigrams(t *testing.T) {
+	t.Run("no CJK content", func(t *testing.T) {
+		content := "hello world"
+		got := enrichContentWithBigrams(content)
+		if got != content {
+			t.Errorf("enrichContentWithBigrams should not modify non-CJK content")
+		}
+	})
+
+	t.Run("with CJK content", func(t *testing.T) {
+		content := "关于内存管理"
+		got := enrichContentWithBigrams(content)
+		if !strings.Contains(got, bigramSeparator) {
+			t.Error("enrichContentWithBigrams should add bigram separator for CJK content")
+		}
+		if !strings.Contains(got, "关于") {
+			t.Error("enrichContentWithBigrams should preserve original content")
+		}
+	})
+}
+
+func TestExpandQueryCJKBigrams(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{
+			name:  "pure English query",
+			query: "hello world",
+			want:  `"hello" OR "world"`,
+		},
+		{
+			name:  "CJK bigram expansion",
+			query: "透明巨页",
+			want:  `("透明" OR "明巨" OR "巨页")`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := expandQueryCJKBigrams(tt.query)
+			if got != tt.want {
+				t.Errorf("expandQueryCJKBigrams(%q) = %q, want %q", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToFTS5AndQuery(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{
+			name:  "simple words",
+			query: "hello world",
+			want:  `"hello" "world"`,
+		},
+		{
+			name:  "CJK expanded to bigrams",
+			query: "透明巨页 Go",
+			want:  `("透明" OR "明巨" OR "巨页") "Go"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toFTS5AndQuery(tt.query)
+			if got != tt.want {
+				t.Errorf("toFTS5AndQuery(%q) = %q, want %q", tt.query, got, tt.want)
+			}
+		})
+	}
+}

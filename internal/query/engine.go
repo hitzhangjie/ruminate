@@ -3,6 +3,7 @@
 package query
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/hitzhangjie/ruminate/internal/config"
@@ -11,13 +12,25 @@ import (
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
+// wikiManager defines the subset of wiki.Manager methods used by Engine.
+// wiki.Manager implicitly satisfies this interface.
+type wikiManager interface {
+	Search(ctx context.Context, query string, topN int, effort wiki.SearchEffort) ([]wiki.SearchResult, error)
+	ReadByPath(path string) (*wiki.Page, error)
+	Read(title string, pageType wiki.PageType) (*wiki.Page, error)
+	Create(title string, pageType wiki.PageType, content string) (*wiki.Page, error)
+	Update(title string, pageType wiki.PageType, content string) (*wiki.Page, error)
+	Index() *wiki.IndexManager
+	SetTracer(tr *trace.Tracer)
+}
+
 // Engine drives AI-powered query operations (ask).
 //
 // Engine is a higher-level orchestration component built on top of wiki.Manager.
 // It owns the Manager lifecycle and coordinates the ask pipeline:
 // retrieve context → build prompt → call LLM → optionally save result.
 type Engine struct {
-	wiki        *wiki.Manager
+	wiki        wikiManager
 	llmProvider llm.LLMProvider
 	llmCfg      config.LLMConfig
 	tracer      *trace.Tracer

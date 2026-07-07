@@ -41,314 +41,321 @@ func createPage(t *testing.T, mgr *wiki.Manager, title string, pt wiki.PageType,
 }
 
 // ---------------------------------------------------------------------------
-// Orphan detection
+// lint problems detection
 // ---------------------------------------------------------------------------
 
-func TestCheckOrphans_Isolated(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
+func TestCheckOrphans(t *testing.T) {
+	t.Run("Isolated", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
 
-	// A page with no links in content and no other pages referencing it.
-	createPage(t, mgr, "lonely-page", wiki.PageTypeConcept, "# Lonely Page\n\nNo links here.")
+		// A page with no links in content and no other pages referencing it.
+		createPage(t, mgr, "lonely-page", wiki.PageTypeConcept, "# Lonely Page\n\nNo links here.")
 
-	eng := New(mgr)
-	report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+		eng := New(mgr)
+		report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
 
-	found := false
-	for _, iss := range report.Issues {
-		if iss.Check == CheckOrphan && strings.Contains(iss.Title, "lonely-page") {
-			found = true
-			if iss.Severity != SeverityWarning {
-				t.Errorf("expected warning severity for isolated page, got %s", iss.Severity)
+		found := false
+		for _, iss := range report.Issues {
+			if iss.Check == CheckOrphan && strings.Contains(iss.Title, "lonely-page") {
+				found = true
+				if iss.Severity != SeverityWarning {
+					t.Errorf("expected warning severity for isolated page, got %s", iss.Severity)
+				}
 			}
 		}
-	}
-	if !found {
-		t.Error("expected isolated page to be flagged")
-	}
-}
+		if !found {
+			t.Error("expected isolated page to be flagged")
+		}
+	})
 
-func TestCheckOrphans_Unreferenced(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
+	t.Run("Unreferenced", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
 
-	// A page that links to another but nothing links back to it.
-	createPage(t, mgr, "target", wiki.PageTypeEntity, "# Target\n\nA target page.")
-	createPage(t, mgr, "source", wiki.PageTypeConcept, "# Source\n\nSee [[target]].")
+		// A page that links to another but nothing links back to it.
+		createPage(t, mgr, "target", wiki.PageTypeEntity, "# Target\n\nA target page.")
+		createPage(t, mgr, "source", wiki.PageTypeConcept, "# Source\n\nSee [[target]].")
 
-	eng := New(mgr)
-	report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+		eng := New(mgr)
+		report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
 
-	// "target" has an incoming link → not orphaned.
-	// "source" has an outgoing link but no incoming → unreferenced (info).
-	foundSource := false
-	for _, iss := range report.Issues {
-		if iss.Check == CheckOrphan && strings.Contains(iss.Page, "source") {
-			foundSource = true
-			if iss.Severity != SeverityInfo {
-				t.Errorf("expected info severity for unreferenced page, got %s", iss.Severity)
+		// "target" has an incoming link → not orphaned.
+		// "source" has an outgoing link but no incoming → unreferenced (info).
+		foundSource := false
+		for _, iss := range report.Issues {
+			if iss.Check == CheckOrphan && strings.Contains(iss.Page, "source") {
+				foundSource = true
+				if iss.Severity != SeverityInfo {
+					t.Errorf("expected info severity for unreferenced page, got %s", iss.Severity)
+				}
+			}
+			if iss.Check == CheckOrphan && strings.Contains(iss.Page, "target") {
+				t.Error("target page should not be flagged as orphan – it has an incoming link")
 			}
 		}
-		if iss.Check == CheckOrphan && strings.Contains(iss.Page, "target") {
-			t.Error("target page should not be flagged as orphan – it has an incoming link")
+		if !foundSource {
+			t.Error("expected source page to be flagged as unreferenced")
 		}
-	}
-	if !foundSource {
-		t.Error("expected source page to be flagged as unreferenced")
-	}
-}
+	})
 
-func TestCheckOrphans_NoIssues(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
+	t.Run("NoIssues", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
 
-	// Two pages that link to each other.
-	createPage(t, mgr, "alpha", wiki.PageTypeConcept, "# Alpha\n\nSee [[beta]].")
-	createPage(t, mgr, "beta", wiki.PageTypeConcept, "# Beta\n\nSee [[alpha]].")
+		// Two pages that link to each other.
+		createPage(t, mgr, "alpha", wiki.PageTypeConcept, "# Alpha\n\nSee [[beta]].")
+		createPage(t, mgr, "beta", wiki.PageTypeConcept, "# Beta\n\nSee [[alpha]].")
 
-	eng := New(mgr)
-	report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	for _, iss := range report.Issues {
-		if iss.Check == CheckOrphan {
-			t.Errorf("unexpected orphan issue: %s", iss.Title)
+		eng := New(mgr)
+		report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
 		}
-	}
-}
 
-// ---------------------------------------------------------------------------
-// Broken link detection
-// ---------------------------------------------------------------------------
+		for _, iss := range report.Issues {
+			if iss.Check == CheckOrphan {
+				t.Errorf("unexpected orphan issue: %s", iss.Title)
+			}
+		}
+	})
+}
 
 func TestCheckBrokenLinks(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
+	t.Run("Normal", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
 
-	createPage(t, mgr, "real-page", wiki.PageTypeEntity, "# Real\n\nA real page.")
-	createPage(t, mgr, "linker", wiki.PageTypeConcept,
-		"# Linker\n\nLinks to [[real-page]] and [[ghost-page]] and [[entities:missing]].")
+		createPage(t, mgr, "real-page", wiki.PageTypeEntity, "# Real\n\nA real page.")
+		createPage(t, mgr, "linker", wiki.PageTypeConcept,
+			"# Linker\n\nLinks to [[real-page]] and [[ghost-page]] and [[entities:missing]].")
 
-	eng := New(mgr)
-	report, err := eng.Run(Options{Checks: []string{CheckBrokenLink}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	brokenCount := 0
-	for _, iss := range report.Issues {
-		if iss.Check != CheckBrokenLink {
-			continue
+		eng := New(mgr)
+		report, err := eng.Run(Options{Checks: []string{CheckBrokenLink}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
 		}
-		brokenCount++
-		if iss.Severity != SeverityError {
-			t.Errorf("expected error severity for broken link, got %s: %s", iss.Severity, iss.Title)
-		}
-	}
-	if brokenCount != 2 {
-		t.Errorf("expected 2 broken links, got %d", brokenCount)
-	}
-}
 
-func TestCheckBrokenLinks_SkipsExternalURLs(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
-
-	createPage(t, mgr, "linker", wiki.PageTypeConcept,
-		"# Linker\n\nCheck https://example.com and [[real-page]].")
-	createPage(t, mgr, "real-page", wiki.PageTypeEntity, "# Real\n\nA real page.")
-
-	eng := New(mgr)
-	report, err := eng.Run(Options{Checks: []string{CheckBrokenLink}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	// The external URL https://example.com should not trigger a broken link.
-	// But note: ParseWikiLinks only captures [[...]] patterns, so the URL is
-	// never extracted as a link target anyway. This test just confirms no
-	// false positives.
-	for _, iss := range report.Issues {
-		if iss.Check == CheckBrokenLink {
-			t.Errorf("unexpected broken link: %s", iss.Title)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Staleness detection
-// ---------------------------------------------------------------------------
-
-func TestCheckStaleness(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
-
-	// Create a fresh page – should not be flagged.
-	createPage(t, mgr, "fresh", wiki.PageTypeConcept, "# Fresh\n\nJust created.")
-
-	// Create a page and backdate its mtime.
-	stale := createPage(t, mgr, "stale", wiki.PageTypeConcept, "# Stale\n\nVery old.")
-	fullPath := filepath.Join(mgr.Root(), stale.Path)
-	oldTime := time.Now().AddDate(0, 0, -100) // 100 days ago
-	if err := os.Chtimes(fullPath, oldTime, oldTime); err != nil {
-		t.Fatalf("Chtimes: %v", err)
-	}
-
-	eng := New(mgr)
-	report, err := eng.Run(Options{
-		Checks:        []string{CheckStaleness},
-		StalenessDays: 90,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	foundStale := false
-	foundFresh := false
-	for _, iss := range report.Issues {
-		if iss.Check != CheckStaleness {
-			continue
-		}
-		if strings.Contains(iss.Page, "stale") {
-			foundStale = true
-			if iss.Severity != SeverityWarning {
-				t.Errorf("expected warning for stale page, got %s", iss.Severity)
+		brokenCount := 0
+		for _, iss := range report.Issues {
+			if iss.Check != CheckBrokenLink {
+				continue
+			}
+			brokenCount++
+			if iss.Severity != SeverityError {
+				t.Errorf("expected error severity for broken link, got %s: %s", iss.Severity, iss.Title)
 			}
 		}
-		if strings.Contains(iss.Page, "fresh") {
-			foundFresh = true
+		if brokenCount != 2 {
+			t.Errorf("expected 2 broken links, got %d", brokenCount)
 		}
-	}
-	if !foundStale {
-		t.Error("expected stale page to be flagged")
-	}
-	if foundFresh {
-		t.Error("fresh page should not be flagged as stale")
-	}
+	})
+
+	t.Run("SkipsExternalURLs", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
+
+		createPage(t, mgr, "linker", wiki.PageTypeConcept,
+			"# Linker\n\nCheck https://example.com and [[real-page]].")
+		createPage(t, mgr, "real-page", wiki.PageTypeEntity, "# Real\n\nA real page.")
+
+		eng := New(mgr)
+		report, err := eng.Run(Options{Checks: []string{CheckBrokenLink}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		// The external URL https://example.com should not trigger a broken link.
+		// But note: ParseWikiLinks only captures [[...]] patterns, so the URL is
+		// never extracted as a link target anyway. This test just confirms no
+		// false positives.
+		for _, iss := range report.Issues {
+			if iss.Check == CheckBrokenLink {
+				t.Errorf("unexpected broken link: %s", iss.Title)
+			}
+		}
+	})
 }
 
-func TestCheckStaleness_CustomThreshold(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
+func TestCheckStaleness(t *testing.T) {
+	t.Run("Normal", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
 
-	p := createPage(t, mgr, "kinda-old", wiki.PageTypeConcept, "# Kinda Old\n\nNot that old.")
-	fullPath := filepath.Join(mgr.Root(), p.Path)
-	oldTime := time.Now().AddDate(0, 0, -60) // 60 days ago
-	if err := os.Chtimes(fullPath, oldTime, oldTime); err != nil {
-		t.Fatalf("Chtimes: %v", err)
-	}
+		// Create a fresh page – should not be flagged.
+		createPage(t, mgr, "fresh", wiki.PageTypeConcept, "# Fresh\n\nJust created.")
 
-	// With a 90-day threshold the page should NOT be stale.
-	eng := New(mgr)
-	report, err := eng.Run(Options{
-		Checks:        []string{CheckStaleness},
-		StalenessDays: 90,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	for _, iss := range report.Issues {
-		if iss.Check == CheckStaleness {
-			t.Errorf("page is 60 days old but threshold is 90 – should not be flagged: %s", iss.Title)
+		// Create a page and backdate its mtime.
+		stale := createPage(t, mgr, "stale", wiki.PageTypeConcept, "# Stale\n\nVery old.")
+		fullPath := filepath.Join(mgr.Root(), stale.Path)
+		oldTime := time.Now().AddDate(0, 0, -100) // 100 days ago
+		if err := os.Chtimes(fullPath, oldTime, oldTime); err != nil {
+			t.Fatalf("Chtimes: %v", err)
 		}
-	}
 
-	// With a 30-day threshold it SHOULD be stale.
-	report, err = eng.Run(Options{
-		Checks:        []string{CheckStaleness},
-		StalenessDays: 30,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	found := false
-	for _, iss := range report.Issues {
-		if iss.Check == CheckStaleness && strings.Contains(iss.Page, "kinda-old") {
-			found = true
+		eng := New(mgr)
+		report, err := eng.Run(Options{
+			Checks:        []string{CheckStaleness},
+			StalenessDays: 90,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
 		}
-	}
-	if !found {
-		t.Error("page is 60 days old and threshold is 30 – should be flagged as stale")
-	}
-}
 
-// ---------------------------------------------------------------------------
-// Contradiction detection
-// ---------------------------------------------------------------------------
-
-func TestCheckContradictions_HeuristicFallback(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
-
-	// Two pages that share a common outlink → without LLM, heuristic fallback
-	// should flag them as info for manual review.
-	createPage(t, mgr, "shared-target", wiki.PageTypeEntity, "# Shared\n\nA shared target.")
-	createPage(t, mgr, "page-a", wiki.PageTypeConcept,
-		"# Page A\n\nTalks about [[shared-target]] and says X is good.")
-	createPage(t, mgr, "page-b", wiki.PageTypeConcept,
-		"# Page B\n\nAlso talks about [[shared-target]] but says X is bad.")
-
-	eng := New(mgr)
-	report, err := eng.Run(Options{
-		Checks:        []string{CheckContradiction},
-		UseLLM:        false, // triggers heuristic fallback
-		StalenessDays: 90,
+		foundStale := false
+		foundFresh := false
+		for _, iss := range report.Issues {
+			if iss.Check != CheckStaleness {
+				continue
+			}
+			if strings.Contains(iss.Page, "stale") {
+				foundStale = true
+				if iss.Severity != SeverityWarning {
+					t.Errorf("expected warning for stale page, got %s", iss.Severity)
+				}
+			}
+			if strings.Contains(iss.Page, "fresh") {
+				foundFresh = true
+			}
+		}
+		if !foundStale {
+			t.Error("expected stale page to be flagged")
+		}
+		if foundFresh {
+			t.Error("fresh page should not be flagged as stale")
+		}
 	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
 
-	found := false
-	for _, iss := range report.Issues {
-		if iss.Check == CheckContradiction && iss.Severity == SeverityInfo {
-			if strings.Contains(iss.Title, "page-a") && strings.Contains(iss.Title, "page-b") {
+	t.Run("CustomThreshold", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
+
+		p := createPage(t, mgr, "kinda-old", wiki.PageTypeConcept, "# Kinda Old\n\nNot that old.")
+		fullPath := filepath.Join(mgr.Root(), p.Path)
+		oldTime := time.Now().AddDate(0, 0, -60) // 60 days ago
+		if err := os.Chtimes(fullPath, oldTime, oldTime); err != nil {
+			t.Fatalf("Chtimes: %v", err)
+		}
+
+		// With a 90-day threshold the page should NOT be stale.
+		eng := New(mgr)
+		report, err := eng.Run(Options{
+			Checks:        []string{CheckStaleness},
+			StalenessDays: 90,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		for _, iss := range report.Issues {
+			if iss.Check == CheckStaleness {
+				t.Errorf("page is 60 days old but threshold is 90 – should not be flagged: %s", iss.Title)
+			}
+		}
+
+		// With a 30-day threshold it SHOULD be stale.
+		report, err = eng.Run(Options{
+			Checks:        []string{CheckStaleness},
+			StalenessDays: 30,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		found := false
+		for _, iss := range report.Issues {
+			if iss.Check == CheckStaleness && strings.Contains(iss.Page, "kinda-old") {
 				found = true
 			}
 		}
-	}
-	if !found {
-		t.Error("expected heuristic fallback contradiction flag for pages sharing a common outlink")
-	}
+		if !found {
+			t.Error("page is 60 days old and threshold is 30 – should be flagged as stale")
+		}
+	})
 }
 
-func TestCheckContradictions_NoSharedLinks(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
+func TestCheckContradictions(t *testing.T) {
+	t.Run("HeuristicFallback", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
 
-	// Pages that do NOT share any common outlinks — no candidates, no LLM calls.
-	createPage(t, mgr, "alpha-target", wiki.PageTypeEntity, "# Alpha Target\n\n.")
-	createPage(t, mgr, "beta-target", wiki.PageTypeEntity, "# Beta Target\n\n.")
-	createPage(t, mgr, "page-a", wiki.PageTypeConcept, "# Page A\n\nSee [[alpha-target]].")
-	createPage(t, mgr, "page-b", wiki.PageTypeConcept, "# Page B\n\nSee [[beta-target]].")
+		// Two pages that share a common outlink → without LLM, heuristic fallback
+		// should flag them as info for manual review.
+		createPage(t, mgr, "shared-target", wiki.PageTypeEntity, "# Shared\n\nA shared target.")
+		createPage(t, mgr, "page-a", wiki.PageTypeConcept,
+			"# Page A\n\nTalks about [[shared-target]] and says X is good.")
+		createPage(t, mgr, "page-b", wiki.PageTypeConcept,
+			"# Page B\n\nAlso talks about [[shared-target]] but says X is bad.")
 
-	eng := New(mgr)
-	report, err := eng.Run(Options{
-		Checks:        []string{CheckContradiction},
-		UseLLM:        false,
-		StalenessDays: 90,
+		eng := New(mgr)
+		report, err := eng.Run(Options{
+			Checks:        []string{CheckContradiction},
+			UseLLM:        false, // triggers heuristic fallback
+			StalenessDays: 90,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		found := false
+		for _, iss := range report.Issues {
+			if iss.Check == CheckContradiction && iss.Severity == SeverityInfo {
+				if strings.Contains(iss.Title, "page-a") && strings.Contains(iss.Title, "page-b") {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Error("expected heuristic fallback contradiction flag for pages sharing a common outlink")
+		}
 	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+
+	t.Run("NoSharedLinks", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
+
+		// Pages that do NOT share any common outlinks — no candidates, no LLM calls.
+		createPage(t, mgr, "alpha-target", wiki.PageTypeEntity, "# Alpha Target\n\n.")
+		createPage(t, mgr, "beta-target", wiki.PageTypeEntity, "# Beta Target\n\n.")
+		createPage(t, mgr, "page-a", wiki.PageTypeConcept, "# Page A\n\nSee [[alpha-target]].")
+		createPage(t, mgr, "page-b", wiki.PageTypeConcept, "# Page B\n\nSee [[beta-target]].")
+
+		eng := New(mgr)
+		report, err := eng.Run(Options{
+			Checks:        []string{CheckContradiction},
+			UseLLM:        false,
+			StalenessDays: 90,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		for _, iss := range report.Issues {
+			if iss.Check == CheckContradiction {
+				t.Errorf("unexpected contradiction flag when pages share no links: %s", iss.Title)
+			}
+		}
+	})
+}
+
+// End-to-end: all checks together
+func TestAllChecks(t *testing.T) {
+	checks := AllChecks()
+	if len(checks) != 4 {
+		t.Fatalf("AllChecks() returned %d checks, want 4", len(checks))
 	}
 
-	for _, iss := range report.Issues {
-		if iss.Check == CheckContradiction {
-			t.Errorf("unexpected contradiction flag when pages share no links: %s", iss.Title)
+	expected := []string{CheckOrphan, CheckBrokenLink, CheckStaleness, CheckContradiction}
+	for i, c := range expected {
+		if checks[i] != c {
+			t.Errorf("AllChecks()[%d] = %q, want %q", i, checks[i], c)
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// End-to-end: all checks together
-// ---------------------------------------------------------------------------
 
 func TestRun_AllChecks(t *testing.T) {
 	mgr, cleanup := setupTestWiki(t)
@@ -416,64 +423,66 @@ func TestRun_AllChecks(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildInlinkMap(t *testing.T) {
-	pages := []*wiki.Page{
-		{
-			Title:   "alpha",
-			Path:    "wiki/concepts/alpha.md",
-			Type:    wiki.PageTypeConcept,
-			Content: "See [[beta]].",
-			Links:   []string{"beta"},
-		},
-		{
-			Title:   "beta",
-			Path:    "wiki/concepts/beta.md",
-			Type:    wiki.PageTypeConcept,
-			Content: "See [[alpha]].",
-			Links:   []string{"alpha"},
-		},
-		{
-			Title:   "gamma",
-			Path:    "wiki/concepts/gamma.md",
-			Type:    wiki.PageTypeConcept,
-			Content: "See [[alpha]].",
-			Links:   []string{"alpha"},
-		},
-	}
+	t.Run("Normal", func(t *testing.T) {
+		pages := []*wiki.Page{
+			{
+				Title:   "alpha",
+				Path:    "wiki/concepts/alpha.md",
+				Type:    wiki.PageTypeConcept,
+				Content: "See [[beta]].",
+				Links:   []string{"beta"},
+			},
+			{
+				Title:   "beta",
+				Path:    "wiki/concepts/beta.md",
+				Type:    wiki.PageTypeConcept,
+				Content: "See [[alpha]].",
+				Links:   []string{"alpha"},
+			},
+			{
+				Title:   "gamma",
+				Path:    "wiki/concepts/gamma.md",
+				Type:    wiki.PageTypeConcept,
+				Content: "See [[alpha]].",
+				Links:   []string{"alpha"},
+			},
+		}
 
-	inlinks := buildInlinkMap(pages)
+		inlinks := buildInlinkMap(pages)
 
-	if len(inlinks["wiki/concepts/alpha.md"]) != 2 {
-		t.Errorf("alpha should have 2 inlink, got %d", len(inlinks["wiki/concepts/alpha.md"]))
-	}
-	if len(inlinks["wiki/concepts/beta.md"]) != 1 {
-		t.Errorf("beta should have 1 inlink, got %d", len(inlinks["wiki/concepts/beta.md"]))
-	}
-}
+		if len(inlinks["wiki/concepts/alpha.md"]) != 2 {
+			t.Errorf("alpha should have 2 inlink, got %d", len(inlinks["wiki/concepts/alpha.md"]))
+		}
+		if len(inlinks["wiki/concepts/beta.md"]) != 1 {
+			t.Errorf("beta should have 1 inlink, got %d", len(inlinks["wiki/concepts/beta.md"]))
+		}
+	})
 
-func TestBuildInlinkMap_TypePrefix(t *testing.T) {
-	pages := []*wiki.Page{
-		{
-			Title:   "target",
-			Path:    "wiki/entities/target.md",
-			Type:    wiki.PageTypeEntity,
-			Content: "# Target",
-			Links:   nil,
-		},
-		{
-			Title:   "source",
-			Path:    "wiki/concepts/source.md",
-			Type:    wiki.PageTypeConcept,
-			Content: "See [[entities:target]].",
-			Links:   []string{"entities:target"},
-		},
-	}
+	t.Run("TypePrefix", func(t *testing.T) {
+		pages := []*wiki.Page{
+			{
+				Title:   "target",
+				Path:    "wiki/entities/target.md",
+				Type:    wiki.PageTypeEntity,
+				Content: "# Target",
+				Links:   nil,
+			},
+			{
+				Title:   "source",
+				Path:    "wiki/concepts/source.md",
+				Type:    wiki.PageTypeConcept,
+				Content: "See [[entities:target]].",
+				Links:   []string{"entities:target"},
+			},
+		}
 
-	inlinks := buildInlinkMap(pages)
+		inlinks := buildInlinkMap(pages)
 
-	if len(inlinks["wiki/entities/target.md"]) != 1 {
-		t.Errorf("target should have 1 inlink (via type:title), got %d",
-			len(inlinks["wiki/entities/target.md"]))
-	}
+		if len(inlinks["wiki/entities/target.md"]) != 1 {
+			t.Errorf("target should have 1 inlink (via type:title), got %d",
+				len(inlinks["wiki/entities/target.md"]))
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -563,87 +572,86 @@ func TestDefaultOptions(t *testing.T) {
 	}
 }
 
-func TestRun_EmptyWiki(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
+func TestRun(t *testing.T) {
+	t.Run("Normal", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
 
-	eng := New(mgr)
-	report, err := eng.Run(DefaultOptions())
-	if err != nil {
-		t.Fatalf("Run on empty wiki: %v", err)
-	}
-	if report.Stats.TotalPages != 0 {
-		t.Errorf("expected 0 pages in empty wiki, got %d", report.Stats.TotalPages)
-	}
-	if len(report.Issues) != 0 {
-		t.Errorf("expected 0 issues in empty wiki, got %d", len(report.Issues))
-	}
-}
-
-func TestRun_EmptyChecksDefaultsToAll(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
-
-	// A page with a broken link – should trigger even with empty Checks.
-	createPage(t, mgr, "p", wiki.PageTypeConcept, "# P\n\nSee [[ghost]].")
-
-	eng := New(mgr)
-	report, err := eng.Run(Options{}) // empty Checks → defaults to all
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	foundBroken := false
-	for _, iss := range report.Issues {
-		if iss.Check == CheckBrokenLink {
-			foundBroken = true
+		eng := New(mgr)
+		report, err := eng.Run(DefaultOptions())
+		if err != nil {
+			t.Fatalf("Run on empty wiki: %v", err)
 		}
-	}
-	if !foundBroken {
-		t.Error("empty Checks should run all checks and find the broken link")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Verify issue sorting order
-// ---------------------------------------------------------------------------
-
-func TestRun_IssueSorting(t *testing.T) {
-	mgr, cleanup := setupTestWiki(t)
-	defer cleanup()
-
-	// Create a page with a broken link (error) and make it stale (warning).
-	// Also create an isolated page (warning).
-	p := createPage(t, mgr, "bad-page", wiki.PageTypeConcept,
-		"# Bad Page\n\nSee [[missing-link]].")
-	fullPath := filepath.Join(mgr.Root(), p.Path)
-	oldTime := time.Now().AddDate(0, 0, -100)
-	if err := os.Chtimes(fullPath, oldTime, oldTime); err != nil {
-		t.Fatalf("Chtimes: %v", err)
-	}
-
-	createPage(t, mgr, "lonely", wiki.PageTypeConcept, "# Lonely\n\nNo links.")
-	createPage(t, mgr, "shared", wiki.PageTypeEntity, "# Shared\n\n.")
-	createPage(t, mgr, "p1", wiki.PageTypeConcept, "# P1\n\nSee [[shared]].")
-	createPage(t, mgr, "p2", wiki.PageTypeConcept, "# P2\n\nSee [[shared]].")
-
-	eng := New(mgr)
-	report, err := eng.Run(DefaultOptions())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	// Verify errors come before warnings, warnings before info.
-	lastSev := SeverityError // start with most severe = earliest in sort
-	for _, iss := range report.Issues {
-		curSev := iss.Severity
-		sevOrder := map[Severity]int{SeverityError: 0, SeverityWarning: 1, SeverityInfo: 2}
-		if sevOrder[curSev] < sevOrder[lastSev] {
-			t.Errorf("sort order violated: %s after %s\n  issue: %s",
-				curSev, lastSev, iss.Title)
+		if report.Stats.TotalPages != 0 {
+			t.Errorf("expected 0 pages in empty wiki, got %d", report.Stats.TotalPages)
 		}
-		lastSev = curSev
-	}
+		if len(report.Issues) != 0 {
+			t.Errorf("expected 0 issues in empty wiki, got %d", len(report.Issues))
+		}
+	})
+
+	t.Run("EmptyChecksDefaultsToAll", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
+
+		// A page with a broken link – should trigger even with empty Checks.
+		createPage(t, mgr, "p", wiki.PageTypeConcept, "# P\n\nSee [[ghost]].")
+
+		eng := New(mgr)
+		report, err := eng.Run(Options{}) // empty Checks → defaults to all
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		foundBroken := false
+		for _, iss := range report.Issues {
+			if iss.Check == CheckBrokenLink {
+				foundBroken = true
+			}
+		}
+		if !foundBroken {
+			t.Error("empty Checks should run all checks and find the broken link")
+		}
+	})
+
+	// Verify issue sorting order
+	t.Run("IssueSorting", func(t *testing.T) {
+		mgr, cleanup := setupTestWiki(t)
+		defer cleanup()
+
+		// Create a page with a broken link (error) and make it stale (warning).
+		// Also create an isolated page (warning).
+		p := createPage(t, mgr, "bad-page", wiki.PageTypeConcept,
+			"# Bad Page\n\nSee [[missing-link]].")
+		fullPath := filepath.Join(mgr.Root(), p.Path)
+		oldTime := time.Now().AddDate(0, 0, -100)
+		if err := os.Chtimes(fullPath, oldTime, oldTime); err != nil {
+			t.Fatalf("Chtimes: %v", err)
+		}
+
+		createPage(t, mgr, "lonely", wiki.PageTypeConcept, "# Lonely\n\nNo links.")
+		createPage(t, mgr, "shared", wiki.PageTypeEntity, "# Shared\n\n.")
+		createPage(t, mgr, "p1", wiki.PageTypeConcept, "# P1\n\nSee [[shared]].")
+		createPage(t, mgr, "p2", wiki.PageTypeConcept, "# P2\n\nSee [[shared]].")
+
+		eng := New(mgr)
+		report, err := eng.Run(DefaultOptions())
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		// Verify errors come before warnings, warnings before info.
+		lastSev := SeverityError // start with most severe = earliest in sort
+		for _, iss := range report.Issues {
+			curSev := iss.Severity
+			sevOrder := map[Severity]int{SeverityError: 0, SeverityWarning: 1, SeverityInfo: 2}
+			if sevOrder[curSev] < sevOrder[lastSev] {
+				t.Errorf("sort order violated: %s after %s\n  issue: %s",
+					curSev, lastSev, iss.Title)
+			}
+			lastSev = curSev
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

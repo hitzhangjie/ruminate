@@ -1,6 +1,10 @@
 # Build output
 build/
 
+# Test output
+*.test
+coverage.out
+
 # Dependencies
 web/node_modules/
 
