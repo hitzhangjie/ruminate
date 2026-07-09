@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 )
 
@@ -65,14 +64,11 @@ var _ llm.EmbeddingProvider = (*mockEmbedder)(nil)
 // testConfig returns a minimal config for unit tests.
 // Embedding is left at zero value so Manager.embedder stays nil
 // unless overridden via SetEmbeddingProvider.
-func testConfig(dir string) *config.Config {
-	return &config.Config{WikiPath: dir}
-}
 
 func TestManager_Init(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -85,7 +81,7 @@ func TestManager_Init(t *testing.T) {
 		filepath.Join(dir, "wiki", "entities"),
 		filepath.Join(dir, "wiki", "concepts"),
 		filepath.Join(dir, "wiki", "synthesis"),
-		filepath.Join(dir, ".ruminate"),
+		filepath.Join(dir, "db"),
 	}
 
 	for _, d := range dirs {
@@ -122,7 +118,7 @@ func TestManager_Init(t *testing.T) {
 func TestManager_Init_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("first Init() error: %v", err)
 	}
@@ -137,7 +133,7 @@ func TestManager_Init_Idempotent(t *testing.T) {
 func TestManager_AddSource(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -195,7 +191,7 @@ func TestManager_AddSource(t *testing.T) {
 func TestManager_AddSource_Validation(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -215,7 +211,7 @@ func TestManager_AddSource_Validation(t *testing.T) {
 func TestManager_ListSources(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -265,7 +261,7 @@ func TestManager_ListSources(t *testing.T) {
 func TestManager_IsInitialized(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if mgr.IsInitialized() {
 		t.Error("should not be initialized before Init()")
 	}
@@ -283,7 +279,7 @@ func TestManager_IsInitialized(t *testing.T) {
 func TestManager_CreateAndRead(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -340,7 +336,7 @@ He previously worked at [[tesla]] and [[openai]].
 func TestManager_Create_Duplicate(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -360,7 +356,7 @@ func TestManager_Create_Duplicate(t *testing.T) {
 func TestManager_Update(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -399,7 +395,7 @@ func TestManager_Update(t *testing.T) {
 func TestManager_Update_Nonexistent(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -414,7 +410,7 @@ func TestManager_Update_Nonexistent(t *testing.T) {
 func TestManager_Delete(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -439,7 +435,7 @@ func TestManager_Delete(t *testing.T) {
 func TestManager_Delete_Nonexistent(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -454,7 +450,7 @@ func TestManager_Delete_Nonexistent(t *testing.T) {
 func TestManager_List(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -508,7 +504,7 @@ func TestManager_List(t *testing.T) {
 func TestManager_ReadByPath(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -533,7 +529,7 @@ func TestManager_ReadByPath(t *testing.T) {
 func TestManager_ReadByPath_Nonexistent(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr := NewManager(testConfig(dir))
+	mgr := NewManager(dir, nil, nil)
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
@@ -580,14 +576,12 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("Create_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		embedder := &mockEmbedder{}
+		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		embedder := &mockEmbedder{}
-		mgr.SetEmbeddingProvider(embedder)
 
 		page, err := mgr.Create("Test Page", PageTypeSummary, "# Test Content")
 		if err != nil {
@@ -614,14 +608,12 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("AddSource_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		embedder := &mockEmbedder{}
+		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		embedder := &mockEmbedder{}
-		mgr.SetEmbeddingProvider(embedder)
 
 		relPath, err := mgr.AddSource("article", "My Article", []byte("# Article Content"))
 		if err != nil {
@@ -652,14 +644,12 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		embedder := &mockEmbedder{}
+		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		embedder := &mockEmbedder{}
-		mgr.SetEmbeddingProvider(embedder)
 
 		_, err := mgr.Create("Test Page", PageTypeSummary, "# Original")
 		if err != nil {
@@ -684,14 +674,12 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("Delete_RemovesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		embedder := &mockEmbedder{}
+		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		embedder := &mockEmbedder{}
-		mgr.SetEmbeddingProvider(embedder)
 
 		page, err := mgr.Create("Temp Page", PageTypeConcept, "# Temp")
 		if err != nil {
@@ -720,7 +708,7 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("NoEmbedder_SkipsGracefully", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		mgr := NewManager(dir, nil, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
@@ -749,13 +737,11 @@ func TestManager_Embedding_Mock(t *testing.T) {
 	t.Run("EmbedderError_DoesNotBlockWrite", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		mgr := NewManager(dir, &errorEmbedder{}, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		mgr.SetEmbeddingProvider(&errorEmbedder{})
 
 		// Create should succeed even though embedder fails
 		_, err := mgr.Create("Test Page", PageTypeSummary, "# Content")
@@ -787,14 +773,12 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Create_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		embedder := llm.NewOllamaEmbedder(baseURL, model)
-		mgr.SetEmbeddingProvider(embedder)
 
 		title := fmt.Sprintf("OllamaEmbedTest_Create_%d", time.Now().UnixNano())
 		page, err := mgr.Create(title, PageTypeEntity, "# Ollama Create Test\n\nThis page was created by an integration test.")
@@ -831,14 +815,12 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("AddSource_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		embedder := llm.NewOllamaEmbedder(baseURL, model)
-		mgr.SetEmbeddingProvider(embedder)
 
 		title := fmt.Sprintf("OllamaEmbedTest_AddSource_%d", time.Now().UnixNano())
 		relPath, err := mgr.AddSource("article", title, []byte("# Ollama AddSource Test\n\nSource material for integration test."))
@@ -871,14 +853,12 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		embedder := llm.NewOllamaEmbedder(baseURL, model)
-		mgr.SetEmbeddingProvider(embedder)
 
 		title := fmt.Sprintf("OllamaEmbedTest_Update_%d", time.Now().UnixNano())
 		_, err := mgr.Create(title, PageTypeConcept, "# Original Ollama Content\n\nBefore update.")
@@ -919,14 +899,12 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Delete_RemovesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		mgr := NewManager(testConfig(dir))
+		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
 		}
 		defer mgr.Close()
-
-		embedder := llm.NewOllamaEmbedder(baseURL, model)
-		mgr.SetEmbeddingProvider(embedder)
 
 		title := fmt.Sprintf("OllamaEmbedTest_Delete_%d", time.Now().UnixNano())
 		page, err := mgr.Create(title, PageTypeConcept, "# Ollama Delete Test\n\nThis page will be deleted.")

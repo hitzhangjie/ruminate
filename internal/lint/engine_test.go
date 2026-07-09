@@ -18,8 +18,11 @@ func setupTestWiki(t *testing.T) (*wiki.Manager, func()) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	cfg := &config.Config{WikiPath: tmpDir}
-	mgr := wiki.NewManager(cfg)
+	cfg := tmpDir
+	mgr, err := wiki.NewManagerFromConfig(cfg, config.LLMConfig{}, config.EmbeddingConfig{})
+	if err != nil {
+		t.Fatalf("failed to create wiki manager: %v", err)
+	}
 	if err := mgr.Init(); err != nil {
 		t.Fatalf("failed to init wiki: %v", err)
 	}
@@ -52,7 +55,7 @@ func TestCheckOrphans(t *testing.T) {
 		// A page with no links in content and no other pages referencing it.
 		createPage(t, mgr, "lonely-page", wiki.PageTypeConcept, "# Lonely Page\n\nNo links here.")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -80,7 +83,7 @@ func TestCheckOrphans(t *testing.T) {
 		createPage(t, mgr, "target", wiki.PageTypeEntity, "# Target\n\nA target page.")
 		createPage(t, mgr, "source", wiki.PageTypeConcept, "# Source\n\nSee [[target]].")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -113,7 +116,7 @@ func TestCheckOrphans(t *testing.T) {
 		createPage(t, mgr, "alpha", wiki.PageTypeConcept, "# Alpha\n\nSee [[beta]].")
 		createPage(t, mgr, "beta", wiki.PageTypeConcept, "# Beta\n\nSee [[alpha]].")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{Checks: []string{CheckOrphan}})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -136,7 +139,7 @@ func TestCheckBrokenLinks(t *testing.T) {
 		createPage(t, mgr, "linker", wiki.PageTypeConcept,
 			"# Linker\n\nLinks to [[real-page]] and [[ghost-page]] and [[entities:missing]].")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{Checks: []string{CheckBrokenLink}})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -165,7 +168,7 @@ func TestCheckBrokenLinks(t *testing.T) {
 			"# Linker\n\nCheck https://example.com and [[real-page]].")
 		createPage(t, mgr, "real-page", wiki.PageTypeEntity, "# Real\n\nA real page.")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{Checks: []string{CheckBrokenLink}})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -199,7 +202,7 @@ func TestCheckStaleness(t *testing.T) {
 			t.Fatalf("Chtimes: %v", err)
 		}
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{
 			Checks:        []string{CheckStaleness},
 			StalenessDays: 90,
@@ -244,7 +247,7 @@ func TestCheckStaleness(t *testing.T) {
 		}
 
 		// With a 90-day threshold the page should NOT be stale.
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{
 			Checks:        []string{CheckStaleness},
 			StalenessDays: 90,
@@ -291,7 +294,7 @@ func TestCheckContradictions(t *testing.T) {
 		createPage(t, mgr, "page-b", wiki.PageTypeConcept,
 			"# Page B\n\nAlso talks about [[shared-target]] but says X is bad.")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{
 			Checks:        []string{CheckContradiction},
 			UseLLM:        false, // triggers heuristic fallback
@@ -324,7 +327,7 @@ func TestCheckContradictions(t *testing.T) {
 		createPage(t, mgr, "page-a", wiki.PageTypeConcept, "# Page A\n\nSee [[alpha-target]].")
 		createPage(t, mgr, "page-b", wiki.PageTypeConcept, "# Page B\n\nSee [[beta-target]].")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{
 			Checks:        []string{CheckContradiction},
 			UseLLM:        false,
@@ -389,7 +392,7 @@ func TestRun_AllChecks(t *testing.T) {
 	createPage(t, mgr, "healthy", wiki.PageTypeSynthesis,
 		"# Healthy\n\nSee [[view-a]] and [[view-b]].")
 
-	eng := New(mgr)
+	eng := New(mgr, config.LLMConfig{})
 	report, err := eng.Run(DefaultOptions())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -577,7 +580,7 @@ func TestRun(t *testing.T) {
 		mgr, cleanup := setupTestWiki(t)
 		defer cleanup()
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(DefaultOptions())
 		if err != nil {
 			t.Fatalf("Run on empty wiki: %v", err)
@@ -597,7 +600,7 @@ func TestRun(t *testing.T) {
 		// A page with a broken link – should trigger even with empty Checks.
 		createPage(t, mgr, "p", wiki.PageTypeConcept, "# P\n\nSee [[ghost]].")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(Options{}) // empty Checks → defaults to all
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -634,7 +637,7 @@ func TestRun(t *testing.T) {
 		createPage(t, mgr, "p1", wiki.PageTypeConcept, "# P1\n\nSee [[shared]].")
 		createPage(t, mgr, "p2", wiki.PageTypeConcept, "# P2\n\nSee [[shared]].")
 
-		eng := New(mgr)
+		eng := New(mgr, config.LLMConfig{})
 		report, err := eng.Run(DefaultOptions())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
@@ -661,8 +664,11 @@ func TestRun(t *testing.T) {
 func BenchmarkRun(b *testing.B) {
 	// Create a wiki with many pages.
 	tmpDir := b.TempDir()
-	cfg := &config.Config{WikiPath: tmpDir}
-	mgr := wiki.NewManager(cfg)
+	cfg := tmpDir
+	mgr, err := wiki.NewManagerFromConfig(cfg, config.LLMConfig{}, config.EmbeddingConfig{})
+	if err != nil {
+		b.Fatalf("create manager: %v", err)
+	}
 	if err := mgr.Init(); err != nil {
 		b.Fatalf("init: %v", err)
 	}
@@ -677,7 +683,7 @@ func BenchmarkRun(b *testing.B) {
 		}
 	}
 
-	eng := New(mgr)
+	eng := New(mgr, config.LLMConfig{})
 	opts := DefaultOptions()
 	opts.UseLLM = false // no LLM in benchmarks
 

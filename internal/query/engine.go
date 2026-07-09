@@ -36,9 +36,12 @@ type Engine struct {
 	tracer      *trace.Tracer
 }
 
-// NewEngine creates a new query Engine from the given configuration.
-func NewEngine(cfg *config.Config) (*Engine, error) {
-	mgr := wiki.NewManager(cfg)
+// NewEngine creates a new query Engine from the given runtime configuration.
+func NewEngine(cfg *config.RuntimeConfig) (*Engine, error) {
+	mgr, err := wiki.NewManagerFromConfig(cfg.WikiPath, cfg.LLM, cfg.Embedding)
+	if err != nil {
+		return nil, err
+	}
 	if !mgr.IsInitialized() {
 		return nil, fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
 	}

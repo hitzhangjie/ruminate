@@ -107,13 +107,16 @@ type Engine struct {
 	llmCfg      config.LLMConfig
 }
 
-// NewEngine creates a new ingest Engine from the given configuration.
+// NewEngine creates a new ingest Engine from the given runtime configuration.
 // It internally initializes the wiki.Manager and validates that the wiki
 // is initialized. Returns an error if the wiki has not been initialized yet.
 // The LLM provider is initialized from cfg; if unavailable, it stays nil
 // (callers should check before calling Ingest).
-func NewEngine(cfg *config.Config) (*Engine, error) {
-	mgr := wiki.NewManager(cfg)
+func NewEngine(cfg *config.RuntimeConfig) (*Engine, error) {
+	mgr, err := wiki.NewManagerFromConfig(cfg.WikiPath, cfg.LLM, cfg.Embedding)
+	if err != nil {
+		return nil, err
+	}
 	if !mgr.IsInitialized() {
 		return nil, fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
 	}

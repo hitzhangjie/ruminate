@@ -1,7 +1,7 @@
 // Package sync implements the sync engine that detects file changes in a source
 // repository and incrementally ingests them into the ruminate knowledge base.
 //
-// The sync engine maintains per-source-repo state in the wiki's .ruminate directory,
+// The sync engine maintains per-source-repo state in the wiki's db directory,
 // tracking the last synced commit so only new changes are processed on each run.
 package sync
 
@@ -21,7 +21,7 @@ import (
 )
 
 // SyncState tracks the sync progress for one or more source repositories.
-// Stored as JSON at wiki_root/.ruminate/sync_state.json.
+// Stored as JSON at wiki_root/db/sync_state.json.
 type SyncState struct {
 	Sources map[string]SourceSyncState `json:"sources"`
 }
@@ -58,14 +58,17 @@ type Engine struct {
 // sourceRepo is the path to the source (notes) repository.
 // sourceType is the default type for ingested files ("note", "article", etc.).
 // dryRun enables dry-run mode where changes are detected but not applied.
-func NewEngine(cfg *config.Config, sourceRepo, sourceType string, dryRun bool) (*Engine, error) {
+func NewEngine(cfg *config.RuntimeConfig, sourceRepo, sourceType string, dryRun bool) (*Engine, error) {
 	engine, err := ingest.NewEngine(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating ingest engine: %w", err)
 	}
 
 	// Create a wiki.Manager for log access and page operations during sync.
-	mgr := wiki.NewManager(cfg)
+	mgr, err := wiki.NewManagerFromConfig(cfg.WikiPath, cfg.LLM, cfg.Embedding)
+	if err != nil {
+		return nil, fmt.Errorf("creating wiki manager: %w", err)
+	}
 
 	return &Engine{
 		wikiRoot:     cfg.WikiPath,
@@ -77,9 +80,9 @@ func NewEngine(cfg *config.Config, sourceRepo, sourceType string, dryRun bool) (
 	}, nil
 }
 
-// statePath returns the path to the sync state file in the wiki's .ruminate directory.
+// statePath returns the path to the sync state file in the wiki's db directory.
 func (e *Engine) statePath() string {
-	return filepath.Join(e.wikiRoot, ".ruminate", "sync_state.json")
+	return filepath.Join(e.wikiRoot, "db", "sync_state.json")
 }
 
 // loadState reads the sync state from disk. Returns an empty state if the file
@@ -108,9 +111,9 @@ func (e *Engine) loadState() (*SyncState, error) {
 
 // saveState writes the sync state to disk.
 func (e *Engine) saveState(state *SyncState) error {
-	ruminateDir := filepath.Join(e.wikiRoot, ".ruminate")
+	ruminateDir := filepath.Join(e.wikiRoot, "db")
 	if err := os.MkdirAll(ruminateDir, 0755); err != nil {
-		return fmt.Errorf("creating .ruminate dir: %w", err)
+		return fmt.Errorf("creating db dir: %w", err)
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")

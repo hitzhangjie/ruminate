@@ -13,11 +13,11 @@ import (
 
 const ruminateHookMarker = "# Installed by ruminate hook install"
 
-// hookScript is the content of the post-commit hook installed by ruminate.
-const hookScript = `#!/bin/sh
+// hookScriptTemplate is the post-commit hook content with wiki name embedded.
+const hookScriptTemplate = `#!/bin/sh
 # Installed by ruminate hook install
 # Calls ruminate sync to update the knowledge base after each commit
-ruminate sync --repo "$(git rev-parse --show-toplevel)"
+ruminate sync --wiki %s --repo "$(git rev-parse --show-toplevel)"
 `
 
 var hookCmd = &cobra.Command{
@@ -39,17 +39,30 @@ var hookInstallCmd = &cobra.Command{
 	Short: "Install post-commit hook to auto-trigger ruminate sync",
 	Long: `Install a post-commit git hook in the specified repository.
 
-The hook runs "ruminate sync --repo <repo_path>" after each commit, keeping
-your knowledge base up to date automatically.
+The hook runs "ruminate sync --wiki <name> --repo <repo_path>" after each commit,
+keeping your knowledge base up to date automatically.
+
+If --wiki is not specified, the default wiki is used automatically.
 
 If a post-commit hook already exists and was not installed by ruminate,
 the command will refuse to overwrite it. Merge the scripts manually in
 that case.
 
 Example:
-  ruminate hook install --repo ~/notes`,
+  ruminate hook install --wiki my-notes --repo ~/notes
+  ruminate hook install --repo ~/notes  (uses default wiki)`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		wikiName, _ := cmd.Flags().GetString("wiki")
+		if wikiName == "" {
+			// Resolve the default wiki when --wiki is not specified.
+			var err error
+			wikiName, err = config.ResolveDefaultWikiName()
+			if err != nil {
+				return fmt.Errorf("no wiki specified and no default wiki found: %w", err)
+			}
+		}
+
 		repo, _ := cmd.Flags().GetString("repo")
 		if repo == "" {
 			var err error
@@ -73,7 +86,7 @@ Example:
 					"post-commit hook already exists at %s and was not installed by ruminate.\n"+
 						"Please merge the following script manually:\n\n%s\n\n"+
 						"Existing hook content:\n%s",
-					hookPath, hookScript, string(existing),
+					hookPath, fmt.Sprintf(hookScriptTemplate, wikiName), string(existing),
 				)
 			}
 		} else if !os.IsNotExist(err) {
@@ -87,12 +100,13 @@ Example:
 		}
 
 		// Write hook script
-		if err := os.WriteFile(hookPath, []byte(hookScript), 0755); err != nil {
+		hookContent := fmt.Sprintf(hookScriptTemplate, wikiName)
+		if err := os.WriteFile(hookPath, []byte(hookContent), 0755); err != nil {
 			return fmt.Errorf("writing hook: %w", err)
 		}
 
 		fmt.Printf("✓ post-commit hook installed at %s\n", hookPath)
-		fmt.Println("  ruminate sync will run automatically after each commit.")
+		fmt.Printf("  ruminate sync --wiki %s will run automatically after each commit.\n", wikiName)
 		return nil
 	},
 }
@@ -153,5 +167,6 @@ func init() {
 	hookCmd.AddCommand(hookUninstallCmd)
 
 	hookInstallCmd.Flags().StringP("repo", "r", "", "Path to source repository (defaults to current directory)")
+	hookInstallCmd.Flags().String("wiki", "", "Target wiki name (uses default if omitted)")
 	hookUninstallCmd.Flags().StringP("repo", "r", "", "Path to source repository (defaults to current directory)")
 }

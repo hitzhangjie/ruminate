@@ -5,7 +5,7 @@
 //   - Polysemy: same term referring to different entities in different contexts
 //   - Acknowledged issues: known problems that are deferred or won't fix
 //
-// Suppressions are stored in .ruminate/lint-suppressions.json within the wiki
+// Suppressions are stored in db/lint-suppressions.json within the wiki
 // root directory. The file is JSON for easy programmatic and manual editing.
 package lint
 
@@ -56,7 +56,7 @@ type SuppressionFile struct {
 // suppressionFilePath returns the absolute path to the suppressions file
 // within the given wiki root directory.
 func suppressionFilePath(wikiRoot string) string {
-	return filepath.Join(wikiRoot, ".ruminate", "lint-suppressions.json")
+	return filepath.Join(wikiRoot, "db", "lint-suppressions.json")
 }
 
 // LoadSuppressions loads suppression rules from disk.

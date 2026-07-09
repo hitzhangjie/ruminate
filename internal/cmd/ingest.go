@@ -46,9 +46,10 @@ Requires an initialized wiki (run "ruminate init" first).`,
 		sourceType, _ := cmd.Flags().GetString("type")
 
 		// Load configuration
-		cfg, err := loadConfig()
+		wikiName, _ := cmd.Flags().GetString("wiki")
+		cfg, err := loadRuntimeConfig(wikiName)
 		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
+			return err
 		}
 
 		// Create ingest engine (internally initializes wiki.Manager)

@@ -114,7 +114,7 @@ ruminate config
 ├── show          显示配置
 ├── edit          编辑配置
 ├── list          列出所有知识库
-└── set-default   设置默认知识库
+└── set           设置默认字段 (default-wiki, default-llm, default-embedding)
 ```
 
 ### 5.2 命令行为
@@ -141,7 +141,7 @@ ruminate config list
 #     research   (~/.ruminate/research)
 
 # 设置默认知识库
-ruminate config set-default research
+ruminate config set default-wiki research
 ```
 
 ### 5.3 分层约束
@@ -188,7 +188,7 @@ ruminate init my-notes
 ruminate init research
 # 输出：
 #   Wiki "research" initialized at ~/.ruminate/research
-#   Use "ruminate config set-default research" to switch default wiki.
+#   Use "ruminate config set default-wiki research" to switch default wiki.
 ```
 
 ## 七、--wiki 参数
@@ -242,7 +242,7 @@ func resolveWiki(name string) (*WikiRef, error) {
 
     // 4. ambiguous
     return nil, fmt.Errorf(
-        "multiple wikis found and no default set. Use --wiki or set a default:\n  ruminate config set-default <name>",
+        "multiple wikis found and no default set. Use --wiki or set a default:\n  ruminate config set default-wiki <name>",
     )
 }
 ```
@@ -337,7 +337,7 @@ ruminate --wiki research reindex      # 重建指定 wiki 的索引
 | `config show` | 可选 | 有/无 `--wiki` 展示不同层级配置 |
 | `config edit` | 可选 | 有/无 `--wiki` 编辑不同层级配置 |
 | `config list` | 不支持 | 列出所有 wiki |
-| `config set-default` | 不支持 | 设置全局默认 wiki |
+| `config set` | 不支持 | 设置全局默认字段 (default-wiki, default-llm, default-embedding) |
 
 ## 十、Config 数据模型
 
@@ -483,7 +483,7 @@ ruminate init --import ~/ruminate_wiki my-notes
 | 3 | 重写 `ruminate init`（改为 `init <name>` 语义） | `internal/cmd/init.go` | P0 |
 | 4 | `--wiki` persistent flag + resolveWiki | `internal/cmd/root.go` | P0 |
 | 5 | 所有命令适配 RuntimeConfig | `internal/cmd/{ingest,ask,find,sync,lint,reindex}.go` | P0 |
-| 6 | `ruminate config show/edit/list/set-default` | `internal/cmd/config.go` | P0 |
+| 6 | `ruminate config show/edit/list/set` | `internal/cmd/config.go` | P0 |
 | 7 | `ruminate sync --all` | `internal/cmd/sync.go` | P0 |
 | 8 | `ruminate hook install --wiki` | `internal/cmd/hook.go` | P0 |
 | 9 | `ruminate serve` 多 wiki 支持 | `internal/cmd/serve.go` + `internal/serve/` | P1 |

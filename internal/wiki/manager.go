@@ -40,16 +40,18 @@ type Page struct {
 
 // Manager handles wiki page CRUD and directory structure.
 type Manager struct {
-	root        string                // wiki root directory path
-	wikiDir     string                // wiki/ subdirectory
-	rawDir      string                // raw/ subdirectory
-	git         *gitwrap.Git          // git wrapper for version control
-	index       *IndexManager         // index manager
-	log         *LogManager           // log manager
+	root    string // wiki root directory path
+	wikiDir string // wiki/ subdirectory
+	rawDir  string // raw/ subdirectory
+
+	git   *gitwrap.Git  // git wrapper for version control
+	index *IndexManager // index manager
+	log   *LogManager   // log manager
+
 	embedder    llm.EmbeddingProvider // optional embedding provider for semantic search
 	llmProvider llm.LLMProvider       // LLM provider for inference
-	llmCfg      config.LLMConfig      // LLM configuration
-	tracer      *trace.Tracer         // pipeline step recorder
+
+	tracer *trace.Tracer // pipeline step recorder
 }
 
 // SetEmbeddingProvider sets the embedding provider used to compute vectors
@@ -63,43 +65,48 @@ func (m *Manager) SetTracer(tr *trace.Tracer) {
 	m.tracer = tr
 }
 
-// NewManager creates a wiki manager from the given configuration.
-// The embedder is automatically initialized from cfg.Embedding; a missing
-// or unreachable embedding provider is treated as non-fatal (embedder stays nil).
+// NewManager creates a wiki manager with the given dependencies.
+// embedder and llmProvider may be nil if the corresponding capability
+// is not needed.
 // If the wiki directory does not exist, Init() must be called to create it.
-func NewManager(cfg *config.Config) *Manager {
-	root := config.ExpandPath(cfg.WikiPath)
-	m := &Manager{
-		root:    root,
-		wikiDir: filepath.Join(root, "wiki"),
-		rawDir:  filepath.Join(root, "raw"),
-		git:     gitwrap.New(root),
+func NewManager(wikiPath string, embedder llm.EmbeddingProvider, llmProvider llm.LLMProvider) *Manager {
+	root := config.ExpandPath(wikiPath)
+	return &Manager{
+		root:        root,
+		wikiDir:     filepath.Join(root, "wiki"),
+		rawDir:      filepath.Join(root, "raw"),
+		git:         gitwrap.New(root),
+		embedder:    embedder,
+		llmProvider: llmProvider,
 	}
+}
 
-	// Auto-initialize embedder from config. Non-fatal: embedder stays nil
-	// if provider is empty or unreachable, keeping wiki operations working.
-	if cfg.Embedding.Provider != "" {
-		if embedder, err := llm.NewEmbeddingProvider(
-			cfg.Embedding.Provider,
-			cfg.Embedding.BaseURL,
-			cfg.Embedding.Model,
-		); err == nil {
-			m.embedder = embedder
+// NewManagerFromConfig creates a wiki manager by initializing providers from
+// config. Provider initialization failures are returned as errors — callers
+// should handle them (the previous "best-effort" behavior silently dropped
+// broken provider configs, which made debugging unnecessarily hard).
+// Prefer NewManager in tests and when you need explicit control over
+// provider initialization.
+func NewManagerFromConfig(wikiPath string, llmCfg config.LLMConfig, embedCfg config.EmbeddingConfig) (*Manager, error) {
+	var embedder llm.EmbeddingProvider
+	var llmProvider llm.LLMProvider
+
+	if embedCfg.Provider != "" {
+		ep, err := llm.NewEmbeddingProvider(embedCfg.Provider, embedCfg.BaseURL, embedCfg.Model)
+		if err != nil {
+			return nil, fmt.Errorf("initializing embedding provider %q: %w", embedCfg.Provider, err)
 		}
+		embedder = ep
 	}
-
-	// Auto-initialize LLM provider from config. Non-fatal: llmProvider stays
-	// nil if provider is empty or unreachable.
-	m.llmCfg = cfg.LLM
-	if cfg.LLM.Provider != "" {
-		if provider, err := llm.NewProvider(
-			cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model,
-		); err == nil {
-			m.llmProvider = provider
+	if llmCfg.Provider != "" {
+		lp, err := llm.NewProvider(llmCfg.Provider, llmCfg.BaseURL, llmCfg.Model)
+		if err != nil {
+			return nil, fmt.Errorf("initializing LLM provider %q: %w", llmCfg.Provider, err)
 		}
+		llmProvider = lp
 	}
 
-	return m
+	return NewManager(wikiPath, embedder, llmProvider), nil
 }
 
 // Root returns the wiki root directory path.
@@ -122,7 +129,7 @@ func (m *Manager) Init() error {
 		filepath.Join(m.wikiDir, "entities"),
 		filepath.Join(m.wikiDir, "concepts"),
 		filepath.Join(m.wikiDir, "synthesis"),
-		filepath.Join(m.root, ".ruminate"),
+		filepath.Join(m.root, "db"),
 	}
 
 	for _, dir := range dirs {
@@ -138,7 +145,7 @@ func (m *Manager) Init() error {
 
 	// Initialize index manager
 	indexPath := filepath.Join(m.root, "index.md")
-	m.index = NewIndexManager(indexPath, filepath.Join(m.root, ".ruminate", "fts.db"))
+	m.index = NewIndexManager(indexPath, filepath.Join(m.root, "db", "fts.db"))
 
 	// Initialize log manager
 	logPath := filepath.Join(m.root, "log.md")
@@ -499,11 +506,6 @@ func (m *Manager) LLM() llm.LLMProvider {
 	return m.llmProvider
 }
 
-// LLMConfig returns the LLM configuration.
-func (m *Manager) LLMConfig() config.LLMConfig {
-	return m.llmCfg
-}
-
 // Close closes the wiki manager and releases resources (e.g., SQLite connection).
 func (m *Manager) Close() error {
 	if m.index != nil {
@@ -748,6 +750,7 @@ func docList(results []SearchResult) string {
 	b.WriteString("]")
 	return b.String()
 }
+
 // scoredDocList formats scoredResult titles for trace output.
 func scoredDocList(results []scoredResult) string {
 	sr := make([]SearchResult, len(results))
@@ -756,8 +759,6 @@ func scoredDocList(results []scoredResult) string {
 	}
 	return docList(sr)
 }
-
-
 
 // rrfFuse uses Reciprocal Rank Fusion (k=60) to boost vector search results
 // with FTS keyword matches. FTS acts as a pure booster: only pages that already
@@ -889,7 +890,7 @@ func (m *Manager) ensureComponents() {
 	if m.index == nil {
 		m.index = NewIndexManager(
 			filepath.Join(m.root, "index.md"),
-			filepath.Join(m.root, ".ruminate", "fts.db"),
+			filepath.Join(m.root, "db", "fts.db"),
 		)
 	}
 	if m.log == nil {

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
@@ -115,12 +116,13 @@ func DefaultOptions() Options {
 
 // Engine runs lint checks on a wiki.
 type Engine struct {
-	mgr *wiki.Manager
+	mgr    *wiki.Manager
+	llmCfg config.LLMConfig
 }
 
 // New creates a new lint engine backed by the given wiki manager.
-func New(mgr *wiki.Manager) *Engine {
-	return &Engine{mgr: mgr}
+func New(mgr *wiki.Manager, llmCfg config.LLMConfig) *Engine {
+	return &Engine{mgr: mgr, llmCfg: llmCfg}
 }
 
 // Run executes all configured lint checks and returns a report.
@@ -445,7 +447,7 @@ func (e *Engine) llmContradictionCheck(candidates []contradictionCandidate, opts
 
 	var issues []Issue
 	llmClient := e.mgr.LLM()
-	llmCfg := e.mgr.LLMConfig()
+	llmCfg := e.llmCfg
 
 	systemPrompt := `You are a knowledge-base consistency checker. Compare the two wiki pages below and identify factual contradictions — statements that cannot both be true.
 

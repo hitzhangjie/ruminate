@@ -33,20 +33,24 @@ Examples:
 		keywords := args[0]
 
 		// Load configuration
-		cfg, err := loadConfig()
+		wikiName, _ := cmd.Flags().GetString("wiki")
+		cfg, err := loadRuntimeConfig(wikiName)
 		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
+			return err
 		}
-		mergeVerbose(cmd, cfg)
 
 		// Open wiki manager (search only needs index, not LLM)
-		mgr := wiki.NewManager(cfg)
+		mgr, err := wiki.NewManagerFromConfig(cfg.WikiPath, cfg.LLM, cfg.Embedding)
+		if err != nil {
+			return err
+		}
 		if !mgr.IsInitialized() {
 			return fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
 		}
 
-		// Attach tracer for pipeline observability
-		tr := trace.New(cfg.Verbose)
+		// Attach tracer for pipeline observability (verbose from CLI flag)
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		tr := trace.New(verbose)
 		mgr.SetTracer(tr)
 		defer tr.Flush(os.Stderr)
 

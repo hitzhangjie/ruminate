@@ -24,6 +24,7 @@ func Execute() error {
 
 func init() {
 	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "Enable verbose pipeline logging to stderr")
+	rootCmd.PersistentFlags().String("wiki", "", "Target wiki name (uses default if omitted)")
 
 	rootCmd.AddCommand(ingestCmd)
 	rootCmd.AddCommand(askCmd)

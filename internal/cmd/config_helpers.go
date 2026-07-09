@@ -4,35 +4,33 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/hitzhangjie/ruminate/internal/config"
 )
 
-// loadConfig loads the effective configuration from disk.
-func loadConfig() (*config.Config, error) {
-	cfg, err := config.Load()
+// loadRuntimeConfig resolves the target wiki and returns a combined RuntimeConfig.
+// wikiName is the value of the --wiki flag (empty string if not specified).
+func loadRuntimeConfig(wikiName string) (*config.RuntimeConfig, error) {
+	if wikiName == "" {
+		var err error
+		wikiName, err = config.ResolveDefaultWikiName()
+		if err != nil {
+			return nil, fmt.Errorf("resolving default wiki: %w", err)
+		}
+	}
+	rt, err := config.ResolveRuntimeConfig(wikiName)
 	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
+		return nil, fmt.Errorf("resolving wiki: %w", err)
 	}
-	return cfg, nil
+	return rt, nil
 }
 
-// mergeVerbose reads the --verbose persistent flag from the command and
-// sets cfg.Verbose accordingly. CLI flag takes precedence over the config
-// file / env var value already loaded.
-func mergeVerbose(cmd *cobra.Command, cfg *config.Config) {
-	if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
-		cfg.Verbose = true
-	}
-}
-
-// printConfig prints the configuration in YAML format.
-func printConfig(cfg *config.Config) {
+// print prints an arbitrary value as YAML.
+func print(v any) {
 	enc := yaml.NewEncoder(os.Stdout)
 	enc.SetIndent(2)
-	if err := enc.Encode(cfg); err != nil {
+	if err := enc.Encode(v); err != nil {
 		fmt.Fprintf(os.Stderr, "Error encoding config: %v\n", err)
 	}
 }

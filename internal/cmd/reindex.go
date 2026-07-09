@@ -20,12 +20,16 @@ Examples:
   ruminate reindex`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadConfig()
+		wikiName, _ := cmd.Flags().GetString("wiki")
+		cfg, err := loadRuntimeConfig(wikiName)
 		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
+			return err
 		}
 
-		mgr := wiki.NewManager(cfg)
+		mgr, err := wiki.NewManagerFromConfig(cfg.WikiPath, cfg.LLM, cfg.Embedding)
+		if err != nil {
+			return err
+		}
 		if !mgr.IsInitialized() {
 			return fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
 		}

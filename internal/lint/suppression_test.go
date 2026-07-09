@@ -9,7 +9,7 @@ import (
 
 func TestSuppressionFilePath(t *testing.T) {
 	got := suppressionFilePath("/home/user/wiki")
-	want := filepath.Join("/home/user/wiki", ".ruminate", "lint-suppressions.json")
+	want := filepath.Join("/home/user/wiki", "db", "lint-suppressions.json")
 	if got != want {
 		t.Errorf("suppressionFilePath = %q, want %q", got, want)
 	}
@@ -35,7 +35,7 @@ func TestLoadSuppressions(t *testing.T) {
 
 	t.Run("valid file loads correctly", func(t *testing.T) {
 		dir := t.TempDir()
-		ruminateDir := filepath.Join(dir, ".ruminate")
+		ruminateDir := filepath.Join(dir, "db")
 		os.MkdirAll(ruminateDir, 0755)
 		suppressionPath := filepath.Join(ruminateDir, "lint-suppressions.json")
 
@@ -61,7 +61,7 @@ func TestLoadSuppressions(t *testing.T) {
 
 	t.Run("malformed JSON returns error", func(t *testing.T) {
 		dir := t.TempDir()
-		ruminateDir := filepath.Join(dir, ".ruminate")
+		ruminateDir := filepath.Join(dir, "db")
 		os.MkdirAll(ruminateDir, 0755)
 		os.WriteFile(filepath.Join(ruminateDir, "lint-suppressions.json"), []byte("{not json"), 0644)
 
@@ -73,7 +73,7 @@ func TestLoadSuppressions(t *testing.T) {
 
 	t.Run("zero version upgraded to 1", func(t *testing.T) {
 		dir := t.TempDir()
-		ruminateDir := filepath.Join(dir, ".ruminate")
+		ruminateDir := filepath.Join(dir, "db")
 		os.MkdirAll(ruminateDir, 0755)
 		content := `{"version": 0, "suppressions": []}`
 		os.WriteFile(filepath.Join(ruminateDir, "lint-suppressions.json"), []byte(content), 0644)
@@ -89,7 +89,7 @@ func TestLoadSuppressions(t *testing.T) {
 
 	t.Run("null suppressions upgraded to empty slice", func(t *testing.T) {
 		dir := t.TempDir()
-		ruminateDir := filepath.Join(dir, ".ruminate")
+		ruminateDir := filepath.Join(dir, "db")
 		os.MkdirAll(ruminateDir, 0755)
 		content := `{"version": 1}`
 		os.WriteFile(filepath.Join(ruminateDir, "lint-suppressions.json"), []byte(content), 0644)
@@ -157,7 +157,7 @@ func TestSuppressionFile(t *testing.T) {
 
 	t.Run("Add", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, ".ruminate", "lint-suppressions.json")
+		path := filepath.Join(dir, "db", "lint-suppressions.json")
 		sf := &SuppressionFile{
 			Version:      1,
 			Suppressions: []Suppression{},
@@ -210,7 +210,7 @@ func TestSuppressionFile(t *testing.T) {
 
 	t.Run("Remove", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, ".ruminate", "lint-suppressions.json")
+		path := filepath.Join(dir, "db", "lint-suppressions.json")
 		sf := &SuppressionFile{
 			Version:      1,
 			Suppressions: []Suppression{},
@@ -238,7 +238,7 @@ func TestSuppressionFile(t *testing.T) {
 
 	t.Run("List", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, ".ruminate", "lint-suppressions.json")
+		path := filepath.Join(dir, "db", "lint-suppressions.json")
 		sf := &SuppressionFile{
 			Version:      1,
 			Suppressions: []Suppression{},
@@ -269,7 +269,7 @@ func TestSuppressionFile(t *testing.T) {
 
 	t.Run("Save", func(t *testing.T) {
 		dir := t.TempDir()
-		path := filepath.Join(dir, ".ruminate", "lint-suppressions.json")
+		path := filepath.Join(dir, "db", "lint-suppressions.json")
 		sf := &SuppressionFile{
 			Version:      1,
 			Suppressions: []Suppression{},

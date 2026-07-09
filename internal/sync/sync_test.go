@@ -40,7 +40,7 @@ func TestLoadState(t *testing.T) {
 		dir := t.TempDir()
 		e := newTestEngine(dir)
 
-		ruminateDir := filepath.Join(dir, ".ruminate")
+		ruminateDir := filepath.Join(dir, "db")
 		os.MkdirAll(ruminateDir, 0755)
 		os.WriteFile(filepath.Join(ruminateDir, "sync_state.json"), []byte("{not json"), 0644)
 
@@ -93,10 +93,10 @@ func TestSaveState(t *testing.T) {
 		dir := t.TempDir()
 		e := newTestEngine(dir)
 
-		// .ruminate dir should not exist yet
-		ruminateDir := filepath.Join(dir, ".ruminate")
+		// db dir should not exist yet
+		ruminateDir := filepath.Join(dir, "db")
 		if _, err := os.Stat(ruminateDir); !os.IsNotExist(err) {
-			t.Fatal(".ruminate dir already exists")
+			t.Fatal("db dir already exists")
 		}
 
 		state := &SyncState{Sources: map[string]SourceSyncState{}}
@@ -105,7 +105,7 @@ func TestSaveState(t *testing.T) {
 		}
 
 		if info, err := os.Stat(ruminateDir); err != nil || !info.IsDir() {
-			t.Error("saveState() should create .ruminate directory")
+			t.Error("saveState() should create db directory")
 		}
 	})
 
@@ -126,7 +126,7 @@ func TestSaveState(t *testing.T) {
 		}
 
 		// Verify the saved file is valid JSON on disk
-		statePath := filepath.Join(dir, ".ruminate", "sync_state.json")
+		statePath := filepath.Join(dir, "db", "sync_state.json")
 		data, err := os.ReadFile(statePath)
 		if err != nil {
 			t.Fatalf("reading saved state: %v", err)
@@ -149,7 +149,7 @@ func TestSaveState(t *testing.T) {
 func TestStatePath(t *testing.T) {
 	e := newTestEngine("/tmp/wiki")
 	got := e.statePath()
-	want := filepath.Join("/tmp/wiki", ".ruminate", "sync_state.json")
+	want := filepath.Join("/tmp/wiki", "db", "sync_state.json")
 	if got != want {
 		t.Errorf("statePath() = %q, want %q", got, want)
 	}

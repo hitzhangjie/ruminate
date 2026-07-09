@@ -24,12 +24,16 @@ var lintCmd = &cobra.Command{
 
 Each issue is classified by severity: error, warning, or info.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadConfig()
+		wikiName, _ := cmd.Flags().GetString("wiki")
+		cfg, err := loadRuntimeConfig(wikiName)
 		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
+			return err
 		}
 
-		mgr := wiki.NewManager(cfg)
+		mgr, err := wiki.NewManagerFromConfig(cfg.WikiPath, cfg.LLM, cfg.Embedding)
+		if err != nil {
+			return err
+		}
 		defer mgr.Close()
 
 		if !mgr.IsInitialized() {
@@ -54,7 +58,7 @@ Each issue is classified by severity: error, warning, or info.`,
 			opts.ContradictionMaxPageChars, _ = cmd.Flags().GetInt("max-llm-chars")
 		}
 
-		engine := lint.New(mgr)
+		engine := lint.New(mgr, cfg.LLM)
 		report, err := engine.Run(opts)
 		if err != nil {
 			return fmt.Errorf("running lint: %w", err)
@@ -93,14 +97,15 @@ var lintSuppressCmd = &cobra.Command{
 Use this when you've reviewed an issue and determined it's not a real problem —
 for example, when two pages use the same term for different entities (polysemy).
 
-Suppressions are stored in .ruminate/lint-suppressions.json and can be
+Suppressions are stored in db/lint-suppressions.json and can be
 edited manually or removed by editing the file.`,
 	Example: `  ruminate lint suppress --page wiki/summaries/xxx.md --related wiki/summaries/yyy.md --reason "一词多义：元宝指代不同实体"
   ruminate lint suppress --check broken_link --page wiki/entities/old.md --reason "Known issue, will fix later"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadConfig()
+		wikiName, _ := cmd.Flags().GetString("wiki")
+		cfg, err := loadRuntimeConfig(wikiName)
 		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
+			return err
 		}
 
 		page, _ := cmd.Flags().GetString("page")
@@ -141,9 +146,10 @@ var lintSuppressionsCmd = &cobra.Command{
 	Short: "List all active suppression rules",
 	Long:  `Display all lint issue suppression rules currently in effect.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadConfig()
+		wikiName, _ := cmd.Flags().GetString("wiki")
+		cfg, err := loadRuntimeConfig(wikiName)
 		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
+			return err
 		}
 
 		wikiRoot := config.ExpandPath(cfg.WikiPath)

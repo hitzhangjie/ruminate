@@ -42,11 +42,11 @@ Examples:
 		question := args[0]
 
 		// Load configuration
-		cfg, err := loadConfig()
+		wikiName, _ := cmd.Flags().GetString("wiki")
+		cfg, err := loadRuntimeConfig(wikiName)
 		if err != nil {
 			return fmt.Errorf("loading config: %w", err)
 		}
-		mergeVerbose(cmd, cfg)
 
 		// Create query engine (internally initializes wiki.Manager)
 		engine, err := query.NewEngine(cfg)
@@ -54,8 +54,9 @@ Examples:
 			return err
 		}
 
-		// Attach tracer for pipeline observability
-		tr := trace.New(cfg.Verbose)
+		// Attach tracer for pipeline observability (verbose from CLI flag)
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		tr := trace.New(verbose)
 		engine.SetTracer(tr)
 		defer tr.Flush(os.Stderr)
 
