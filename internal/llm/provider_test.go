@@ -12,7 +12,7 @@ import (
 
 func TestNewProvider(t *testing.T) {
 	t.Run("NewProvider_Ollama", func(t *testing.T) {
-		p, err := NewProvider("ollama", "http://localhost:11434", "gemma3:4b")
+		p, err := NewProvider("ollama", "http://localhost:11434", "gemma3:4b", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -22,7 +22,7 @@ func TestNewProvider(t *testing.T) {
 	})
 
 	t.Run("NewProvider_Unsupported", func(t *testing.T) {
-		_, err := NewProvider("unknown", "", "")
+		_, err := NewProvider("unknown", "", "", "")
 		if err == nil {
 			t.Fatal("expected error for unsupported provider")
 		}

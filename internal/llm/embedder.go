@@ -14,7 +14,7 @@ type EmbeddingProvider interface {
 
 // NewEmbeddingProvider creates an embedding provider based on the config.
 // Supported providers: "ollama".
-func NewEmbeddingProvider(provider, baseURL, model string) (EmbeddingProvider, error) {
+func NewEmbeddingProvider(provider, baseURL, model, apikey string) (EmbeddingProvider, error) {
 	switch provider {
 	case "ollama":
 		return NewOllamaEmbedder(baseURL, model), nil

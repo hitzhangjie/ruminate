@@ -48,7 +48,7 @@ func NewEngine(cfg *config.RuntimeConfig) (*Engine, error) {
 
 	var llmProvider llm.LLMProvider
 	if cfg.LLM.Provider != "" {
-		provider, err := llm.NewProvider(cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model)
+		provider, err := llm.NewProvider(cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model, cfg.LLM.APIKey)
 		if err == nil {
 			llmProvider = provider
 		}

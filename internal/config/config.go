@@ -23,6 +23,10 @@ type LLMConfig struct {
 	Model          string  `yaml:"model"`
 	Temperature    float64 `yaml:"temperature"`
 	MaxInputTokens int     `yaml:"max_input_tokens"`
+
+	// APIKey is the API key for providers that require authentication.
+	// Empty means no auth (e.g., local Ollama).
+	APIKey string `yaml:"api_key" mapstructure:"api_key"`
 }
 
 // EmbeddingConfig holds configuration for the embedding provider.
@@ -30,6 +34,10 @@ type EmbeddingConfig struct {
 	Provider string `yaml:"provider"`
 	BaseURL  string `yaml:"base_url"`
 	Model    string `yaml:"model"`
+
+	// APIKey is the API key for providers that require authentication.
+	// Empty means no auth (e.g., local Ollama).
+	APIKey string `yaml:"api_key" mapstructure:"api_key"`
 }
 
 // ServeConfig holds configuration for the HTTP server.

@@ -53,11 +53,14 @@ type LLMProvider interface {
 }
 
 // NewProvider creates an LLM provider based on the config.
-// Supported providers: "ollama".
-func NewProvider(provider, baseURL, model string) (LLMProvider, error) {
+// Supported providers: "ollama", "hy3".
+// apiKey is required for authenticated providers (hy3); ignored by ollama.
+func NewProvider(provider, baseURL, model, apiKey string) (LLMProvider, error) {
 	switch provider {
 	case "ollama":
 		return NewOllamaProvider(baseURL, model), nil
+	case "hy3":
+		return NewHy3Provider(baseURL, model, apiKey)
 	default:
 		return nil, &ErrUnsupportedProvider{Provider: provider}
 	}

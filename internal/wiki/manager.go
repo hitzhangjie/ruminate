@@ -92,14 +92,14 @@ func NewManagerFromConfig(wikiPath string, llmCfg config.LLMConfig, embedCfg con
 	var llmProvider llm.LLMProvider
 
 	if embedCfg.Provider != "" {
-		ep, err := llm.NewEmbeddingProvider(embedCfg.Provider, embedCfg.BaseURL, embedCfg.Model)
+		ep, err := llm.NewEmbeddingProvider(embedCfg.Provider, embedCfg.BaseURL, embedCfg.Model, embedCfg.APIKey)
 		if err != nil {
 			return nil, fmt.Errorf("initializing embedding provider %q: %w", embedCfg.Provider, err)
 		}
 		embedder = ep
 	}
 	if llmCfg.Provider != "" {
-		lp, err := llm.NewProvider(llmCfg.Provider, llmCfg.BaseURL, llmCfg.Model)
+		lp, err := llm.NewProvider(llmCfg.Provider, llmCfg.BaseURL, llmCfg.Model, llmCfg.APIKey)
 		if err != nil {
 			return nil, fmt.Errorf("initializing LLM provider %q: %w", llmCfg.Provider, err)
 		}

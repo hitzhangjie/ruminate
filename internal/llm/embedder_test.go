@@ -20,7 +20,7 @@ func ollamaEmbedModel() string {
 
 func TestNewEmbeddingProvider(t *testing.T) {
 	t.Run("NewProvider_Ollama", func(t *testing.T) {
-		p, err := NewEmbeddingProvider("ollama", "http://localhost:11434", "nomic-embed-text")
+		p, err := NewEmbeddingProvider("ollama", "http://localhost:11434", "nomic-embed-text", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -30,7 +30,7 @@ func TestNewEmbeddingProvider(t *testing.T) {
 	})
 
 	t.Run("NewProvider_Unsupported", func(t *testing.T) {
-		_, err := NewEmbeddingProvider("unknown", "", "")
+		_, err := NewEmbeddingProvider("unknown", "", "", "")
 		if err == nil {
 			t.Fatal("expected error for unsupported provider")
 		}
