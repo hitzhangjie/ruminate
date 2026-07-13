@@ -11,31 +11,35 @@ import (
 	"github.com/openai/openai-go/shared"
 )
 
-// Hy3Provider implements LLMProvider for Tencent HY3 API (OpenAI-compatible).
+// HunyuanProvider implements LLMProvider for Tencent Hunyuan API (OpenAI-compatible).
 //
-// HY3 API docs: the Chat Completions API endpoint is at
+// Hunyuan API docs: the Chat Completions API endpoint is at
 //
 //	POST /openapi/v2/chat/completions
 //
 // with base URL http://api.taiji.woa.com.
 // It uses Bearer token auth and is largely OpenAI-compatible.
-type Hy3Provider struct {
+type HunyuanProvider struct {
 	baseURL string
 	model   string
 	client  openai.Client
 }
 
-// NewHy3Provider creates a new Hy3Provider.
+const defaultHunyuanBaseURL = "http://api.taiji.woa.com/openapi/v2"
+
+// NewHunyuanProvider creates a new HunyuanProvider.
 //
-// baseURL should be the full base URL including the API version path,
-// e.g. "http://api.taiji.woa.com/openapi/v2".
-// model is the model name, typically "hy3".
+// baseURL defaults to http://api.taiji.woa.com/openapi/v2 when empty.
+// model is the model name, typically "hunyuan".
 // apiKey is the Bearer token for authentication.
-func NewHy3Provider(baseURL, model, apiKey string) (*Hy3Provider, error) {
+func NewHunyuanProvider(baseURL, model, apiKey string) (*HunyuanProvider, error) {
 	if apiKey == "" {
-		return nil, fmt.Errorf("hy3: api key is required")
+		return nil, fmt.Errorf("hunyuan: api key is required")
 	}
 
+	if baseURL == "" {
+		baseURL = defaultHunyuanBaseURL
+	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
 	var opts []option.RequestOption
@@ -44,15 +48,15 @@ func NewHy3Provider(baseURL, model, apiKey string) (*Hy3Provider, error) {
 
 	client := openai.NewClient(opts...)
 
-	return &Hy3Provider{
+	return &HunyuanProvider{
 		baseURL: baseURL,
 		model:   model,
 		client:  client,
 	}, nil
 }
 
-// Chat sends a non-streaming chat request to HY3 API.
-func (p *Hy3Provider) Chat(ctx context.Context, messages []Message, opts *ChatOptions) (*ChatResponse, error) {
+// Chat sends a non-streaming chat request to Hunyuan API.
+func (p *HunyuanProvider) Chat(ctx context.Context, messages []Message, opts *ChatOptions) (*ChatResponse, error) {
 	oaiMessages := p.convertMessages(messages)
 
 	params := openai.ChatCompletionNewParams{
@@ -71,14 +75,14 @@ func (p *Hy3Provider) Chat(ctx context.Context, messages []Message, opts *ChatOp
 
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("hy3 chat: %w", err)
+		return nil, fmt.Errorf("hunyuan chat: %w", err)
 	}
 
 	return p.parseResponse(resp), nil
 }
 
-// ChatStream sends a streaming chat request to HY3 API.
-func (p *Hy3Provider) ChatStream(ctx context.Context, messages []Message, opts *ChatOptions) (<-chan Chunk, error) {
+// ChatStream sends a streaming chat request to Hunyuan API.
+func (p *HunyuanProvider) ChatStream(ctx context.Context, messages []Message, opts *ChatOptions) (<-chan Chunk, error) {
 	oaiMessages := p.convertMessages(messages)
 
 	params := openai.ChatCompletionNewParams{
@@ -95,7 +99,7 @@ func (p *Hy3Provider) ChatStream(ctx context.Context, messages []Message, opts *
 		}
 	}
 
-	// Enable usage chunk in streaming (HY3 returns usage in a final chunk when
+	// Enable usage chunk in streaming (Hunyuan returns usage in a final chunk when
 	// stream_options.include_usage is true).
 	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 		IncludeUsage: param.NewOpt(true),
@@ -118,7 +122,7 @@ func (p *Hy3Provider) ChatStream(ctx context.Context, messages []Message, opts *
 		}
 
 		if err := stream.Err(); err != nil {
-			ch <- Chunk{Error: fmt.Errorf("hy3 stream: %w", err)}
+			ch <- Chunk{Error: fmt.Errorf("hunyuan stream: %w", err)}
 		}
 	}()
 
@@ -127,7 +131,7 @@ func (p *Hy3Provider) ChatStream(ctx context.Context, messages []Message, opts *
 
 // resolveModel returns the model to use for this request.
 // Request-level model overrides the provider default.
-func (p *Hy3Provider) resolveModel(opts *ChatOptions) string {
+func (p *HunyuanProvider) resolveModel(opts *ChatOptions) string {
 	if opts != nil && opts.Model != "" {
 		return opts.Model
 	}
@@ -135,7 +139,7 @@ func (p *Hy3Provider) resolveModel(opts *ChatOptions) string {
 }
 
 // convertMessages converts internal Message format to OpenAI SDK format.
-func (p *Hy3Provider) convertMessages(messages []Message) []openai.ChatCompletionMessageParamUnion {
+func (p *HunyuanProvider) convertMessages(messages []Message) []openai.ChatCompletionMessageParamUnion {
 	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
 	for _, msg := range messages {
 		result = append(result, p.convertMessage(msg))
@@ -144,7 +148,7 @@ func (p *Hy3Provider) convertMessages(messages []Message) []openai.ChatCompletio
 }
 
 // convertMessage converts a single internal Message to OpenAI SDK format.
-func (p *Hy3Provider) convertMessage(msg Message) openai.ChatCompletionMessageParamUnion {
+func (p *HunyuanProvider) convertMessage(msg Message) openai.ChatCompletionMessageParamUnion {
 	switch msg.Role {
 	case "system":
 		return openai.SystemMessage(msg.Content)
@@ -158,7 +162,7 @@ func (p *Hy3Provider) convertMessage(msg Message) openai.ChatCompletionMessagePa
 }
 
 // parseResponse converts an OpenAI SDK ChatCompletion to our ChatResponse.
-func (p *Hy3Provider) parseResponse(resp *openai.ChatCompletion) *ChatResponse {
+func (p *HunyuanProvider) parseResponse(resp *openai.ChatCompletion) *ChatResponse {
 	result := &ChatResponse{
 		Usage: TokenUsage{
 			PromptTokens:     int(resp.Usage.PromptTokens),

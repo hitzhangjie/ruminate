@@ -18,7 +18,11 @@ type OllamaEmbedder struct {
 }
 
 // NewOllamaEmbedder creates a new OllamaEmbedder.
+// If baseURL is empty, defaults to http://localhost:11434.
 func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
+	if baseURL == "" {
+		baseURL = defaultOllamaBaseURL
+	}
 	return &OllamaEmbedder{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		model:   model,

@@ -13,11 +13,13 @@ type EmbeddingProvider interface {
 }
 
 // NewEmbeddingProvider creates an embedding provider based on the config.
-// Supported providers: "ollama".
+// Supported providers: "ollama", "hunyuan".
 func NewEmbeddingProvider(provider, baseURL, model, apikey string) (EmbeddingProvider, error) {
 	switch provider {
 	case "ollama":
 		return NewOllamaEmbedder(baseURL, model), nil
+	case "hunyuan":
+		return NewHunyuanEmbedder(baseURL, model, apikey)
 	default:
 		return nil, &ErrUnsupportedProvider{Provider: provider}
 	}

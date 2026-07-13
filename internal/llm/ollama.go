@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+const defaultOllamaBaseURL = "http://localhost:11434"
+
 // OllamaProvider implements LLMProvider for Ollama.
 type OllamaProvider struct {
 	baseURL string
@@ -20,8 +22,12 @@ type OllamaProvider struct {
 
 // NewOllamaProvider creates a new OllamaProvider.
 // baseURL is the Ollama API endpoint (e.g. "http://localhost:11434").
+// If empty, defaults to http://localhost:11434.
 // model is the default model name (e.g. "llama3.2").
 func NewOllamaProvider(baseURL, model string) *OllamaProvider {
+	if baseURL == "" {
+		baseURL = defaultOllamaBaseURL
+	}
 	return &OllamaProvider{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		model:   model,

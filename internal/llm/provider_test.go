@@ -21,6 +21,16 @@ func TestNewProvider(t *testing.T) {
 		}
 	})
 
+	t.Run("NewProvider_Ollama_DefaultBaseURL", func(t *testing.T) {
+		p, err := NewProvider("ollama", "", "gemma3:4b", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if p == nil {
+			t.Fatal("expected non-nil provider")
+		}
+	})
+
 	t.Run("NewProvider_Unsupported", func(t *testing.T) {
 		_, err := NewProvider("unknown", "", "", "")
 		if err == nil {
