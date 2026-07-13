@@ -277,3 +277,4 @@ func TestSourceDocList(t *testing.T) {
 		t.Errorf("two = %q, want [A,B]", got)
 	}
 }
+

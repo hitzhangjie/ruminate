@@ -605,41 +605,6 @@ func TestManager_Embedding_Mock(t *testing.T) {
 		}
 	})
 
-	t.Run("AddSource_StoresEmbedding", func(t *testing.T) {
-		dir := t.TempDir()
-
-		embedder := &mockEmbedder{}
-		mgr := NewManager(dir, embedder, nil)
-		if err := mgr.Init(); err != nil {
-			t.Fatalf("Init() error: %v", err)
-		}
-		defer mgr.Close()
-
-		relPath, err := mgr.AddSource("article", "My Article", []byte("# Article Content"))
-		if err != nil {
-			t.Fatalf("AddSource() error: %v", err)
-		}
-
-		if embedder.embedCount != 1 {
-			t.Errorf("expected 1 embed call, got %d", embedder.embedCount)
-		}
-
-		// Verify vector was stored for the raw source
-		results, err := mgr.Index().SearchByVector([]float32{1, 0, 0}, 2)
-		if err != nil {
-			t.Fatalf("SearchByVector error: %v", err)
-		}
-		found := false
-		for _, r := range results {
-			if r.Path == relPath {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("expected vector to be stored for raw source")
-		}
-	})
 
 	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
@@ -812,43 +777,6 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 		}
 	})
 
-	t.Run("AddSource_StoresEmbedding", func(t *testing.T) {
-		dir := t.TempDir()
-
-		embedder := llm.NewOllamaEmbedder(baseURL, model)
-		mgr := NewManager(dir, embedder, nil)
-		if err := mgr.Init(); err != nil {
-			t.Fatalf("Init() error: %v", err)
-		}
-		defer mgr.Close()
-
-		title := fmt.Sprintf("OllamaEmbedTest_AddSource_%d", time.Now().UnixNano())
-		relPath, err := mgr.AddSource("article", title, []byte("# Ollama AddSource Test\n\nSource material for integration test."))
-		if err != nil {
-			t.Fatalf("AddSource() error: %v", err)
-		}
-
-		queryVec, err := embedder.EmbedQuery(context.Background(), "Ollama AddSource Test")
-		if err != nil {
-			t.Fatalf("EmbedQuery error: %v", err)
-		}
-		results, err := mgr.Index().SearchByVector(queryVec, 3)
-		if err != nil {
-			t.Fatalf("SearchByVector error: %v", err)
-		}
-
-		found := false
-		for _, r := range results {
-			if r.Path == relPath {
-				found = true
-				t.Logf("found raw source with rank %.4f", r.Rank)
-				break
-			}
-		}
-		if !found {
-			t.Errorf("raw source %q not found in vector search results", relPath)
-		}
-	})
 
 	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()

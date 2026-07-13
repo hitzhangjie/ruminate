@@ -500,10 +500,14 @@ Output ONLY a valid JSON object (no markdown, no preamble, no explanation). The 
 }
 
 Rules:
-- Extract 3-8 most important entities (people, events, terms, organizations, etc.)
-- Extract 2-5 key concepts or themes
-- List 3-7 key points
-- Provide 3-7 descriptive tags
+- Extract ALL notable entities (people, events, terms, organizations, etc.). For a
+  focused article this may be 3-8; for catalogs, tables, or lists, extract every
+  meaningful entry — do not skip entries just because there are many of them.
+- Extract ALL key concepts or themes (typically 2-5 for focused content, more for
+  broad surveys or reference documents)
+- List ALL key points from the content
+- Provide 3-7 descriptive tags (tags summarize themes; the count guidance does not
+  apply to entities/concepts/key_points)
 - Write all content in the same language as the source material
 - Be accurate and factual — do not fabricate information
 - Keep descriptions concise and informative`

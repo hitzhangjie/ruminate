@@ -271,11 +271,7 @@ func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Messa
 		}
 
 		fmt.Fprintf(&contextBuilder, "### Source %d: %s\n\n", i+1, src.Title)
-		content := page.Content
-		if len(content) > 4000 {
-			content = content[:4000] + "\n\n... (truncated)"
-		}
-		contextBuilder.WriteString(content)
+		contextBuilder.WriteString(page.Content)
 		contextBuilder.WriteString("\n\n---\n\n")
 	}
 

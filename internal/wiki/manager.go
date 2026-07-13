@@ -209,16 +209,7 @@ func (m *Manager) AddSource(sourceType string, title string, content []byte) (st
 		return "", fmt.Errorf("writing source file: %w", err)
 	}
 
-	// Index the raw source in FTS5 for full-text search.
 	relPath := filepath.ToSlash(filepath.Join("raw", sourceType, filename))
-	m.ensureComponents()
-	if err := m.index.AddRawSource(relPath, title, string(content)); err != nil {
-		return "", fmt.Errorf("indexing raw source: %w", err)
-	}
-
-	// Compute and store embedding for semantic search
-	m.computeAndStoreEmbedding(string(content), relPath)
-
 	return relPath, nil
 }
 
@@ -928,23 +919,6 @@ func (m *Manager) Reindex() error {
 	for _, p := range pages {
 		if err := m.index.ReindexContent(p.Path, p.Title, string(p.Type), p.Content); err != nil {
 			return fmt.Errorf("reindexing page %s: %w", p.Path, err)
-		}
-	}
-
-	// Reindex raw sources
-	sources, err := m.ListSources("")
-	if err != nil {
-		return fmt.Errorf("listing sources: %w", err)
-	}
-	for _, relPath := range sources {
-		fullPath := filepath.Join(m.root, relPath)
-		content, err := os.ReadFile(fullPath)
-		if err != nil {
-			return fmt.Errorf("reading raw source %s: %w", relPath, err)
-		}
-		title := strings.TrimSuffix(filepath.Base(relPath), ".md")
-		if err := m.index.ReindexContent(relPath, title, "raw", string(content)); err != nil {
-			return fmt.Errorf("reindexing raw source %s: %w", relPath, err)
 		}
 	}
 
