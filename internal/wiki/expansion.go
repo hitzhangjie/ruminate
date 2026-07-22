@@ -24,14 +24,14 @@ const (
 	// variants, each searched independently, results merged via RRF.
 	//
 	// Pipeline:
-	// Query → LLM hypo doc → embed(hypo) → vector search → FTS boost → MMR → Rerank → topN
+	// Query → LLM expand → [q1,q2,q3] → 3×vector search → RRF merge → FTS boost → MMR → Rerank → topN
 	SearchEffortBalanced SearchEffort = "balanced"
 	// SearchEffortThorough uses HyDE (Hypothetical Document Embeddings):
 	// LLM generates a hypothetical answer passage, then its embedding
 	// replaces the original query embedding for vector search.
 	//
 	// Pipeline:
-	// Query → LLM expand → [q1,q2,q3] → 3×vector search → RRF merge → FTS boost → MMR → Rerank → topN
+	// Query → LLM hypo doc → embed(hypo) → vector search → FTS boost → MMR → Rerank → topN
 	SearchEffortThorough SearchEffort = "thorough"
 )
 
