@@ -1,7 +1,7 @@
 # 技术方案
 
 > 本文档描述 Ruminate 的技术架构、模块设计、接口约定和关键技术决策。
-> 最后更新：2026-06-30
+> 最后更新：2026-08-04
 
 ---
 
@@ -11,6 +11,7 @@
 ┌─────────────────────────────────────────────────────┐
 │                   ruminate CLI                       │
 │   ingest │ ask │ find │ lint │ serve │ config        │
+│   (+ ask --agent / agent：内嵌 ReAct)                 │
 │                  (cobra commands)                     │
 └──────────┬──────────────────────┬────────────────────┘
            │                      │
@@ -19,11 +20,12 @@
   ┌────────┴──────────┐    ┌──────┴──────────────┐
   │  Ingest Engine    │    │  Web Frontend        │
   │  Query Engine     │    │  Vite + React + TS   │
-  │  Lint Engine      │    │  - Wiki 浏览          │
-  │  Wiki Manager     │    │  - AI 对话           │
-  │  Search Manager   │    │  - 资料摄入管理       │
-  └────────┬──────────┘    │  - 知识图谱          │
-           │               └─────────────────────┘
+  │  Agent (ReAct)    │    │  - Wiki 浏览          │
+  │  Lint Engine      │    │  - AI 对话           │
+  │  Wiki Manager     │    │  - 资料摄入管理       │
+  │  Search Manager   │    │  - 知识图谱          │
+  └────────┬──────────┘    └─────────────────────┘
+           │
   ┌────────┴──────────┐
   │  LLM Provider 层   │
   │  ├─ Ollama (推理)  │
@@ -64,6 +66,9 @@ ruminate/
 │   │   ├── engine.go            # 查询主流程
 │   │   ├── finder.go            # 全文检索（FTS5）
 │   │   └── asker.go             # AI 问答（检索→综合→引用）
+│   ├── agent/                   # 通用探索 Agent（规划，见 docs/109）
+│   │   ├── react.go             # ReAct 循环：Thought → Action → Observation
+│   │   └── tools/               # wiki/raw/file_grep/tree-sitter 等工具
 │   ├── lint/                    # 巡检引擎
 │   │   └── engine.go            # 健康检查主流程
 │   ├── wiki/                    # Wiki 管理
@@ -126,9 +131,9 @@ ruminate/
 
 ```
 <wiki_root>/                    # 默认为当前目录的 ruminate_wiki/
-├── raw/                        # 原始资料（按用户分类标签组织：article, paper, note, blog...）
-│   └── <source-type>/           # 按需创建，source-type 由用户自定义
-├── wiki/                       # AI 生成的 Wiki 页面
+├── raw/                        # Evidence：原始资料快照（article, paper, note, blog...）
+│   └── <source-type>/           # 按需创建，source-type 由用户自定义；不可被 LLM 改写
+├── wiki/                       # Synthesis：AI 生成的 Wiki 页面
 │   ├── summaries/              # 摘要页
 │   ├── entities/               # 实体页（人物、事件、术语...）
 │   ├── concepts/               # 概念页
@@ -137,8 +142,10 @@ ruminate/
 ├── log.md                      # 操作日志（时间线）
 ├── schema.md                   # Wiki 结构定义和写作规范
 └── .ruminate/                  # 内部状态（不入版本控制）
-    └── fts.db                  # SQLite FTS5 索引
+    └── fts.db                  # SQLite FTS5 索引（当前主要为 wiki 页；raw 独立检索见 108）
 ```
+
+**双真相**：`raw/` = 事实真相（Evidence）；`wiki/` = 理解真相（Synthesis）。蒸馏有损，查询需支持回退。见 [108-dual-truth-and-layered-retrieval.md](108-dual-truth-and-layered-retrieval.md)。
 
 ### 3.2 LLM Provider 接口
 
@@ -191,13 +198,20 @@ type EmbeddingProvider interface {
 
 **AI 问答 (ask):**
 ```
-用户执行: ruminate ask "问题"
+用户执行: ruminate ask "问题"              # 单轮：混合检索 → 综合
+用户执行: ruminate ask "问题" --agent     # 规划：内嵌 ReAct 多步探索
 
-1. 检索相关页面 → FTS5 搜索（pages_fts），按 BM25 评分排序取 top-N
-2. 读取候选页面内容（按相关性截取 top-N）
+【默认 ask】
+1. 检索相关页面 → 混合检索（向量 + FTS + 可选 expansion/HyDE + MMR + rerank）
+2. 读取候选 Wiki 页面内容（L1 Synthesis）
 3. 构建 LLM prompt → 系统提示 + 相关页面内容 + 用户问题
 4. LLM 综合回答 → 带引用标注
 5. 可选：将问答结果回写 Wiki
+
+【分层 / Agent，见 docs/108、docs/109】
+- --evidence auto|raw：L1 不足时打开 contributing raw（L2）
+- --agent：内嵌通用 ReAct（wiki / raw / file_grep / tree-sitter…）
+  可回退到代码 roots；默认不上 gopls，可选挂 LSP
 ```
 
 ### 3.5 索引策略
@@ -321,4 +335,5 @@ lint:
 2. **不用消息队列**：单用户本地工具，同步操作即可。Web 端的长任务用简单的 goroutine + 状态轮询。
 3. **不做用户系统**：本地工具，单用户。团队协作是 P2。
 4. **不做插件系统**（P0）：MCP 集成在 P2 实现。
-5. **Git 作为唯一真相源**：不搞数据库存储 Wiki 内容。Markdown 文件 + Git = 可移植、可合并、永不锁定。
+5. **Git 作为 Synthesis 的版本真相**：不搞数据库存储 Wiki 内容。Markdown 文件 + Git = 可移植、可合并、永不锁定。内容层面另有 **双真相**：raw/外部源 = 事实证据，wiki = 编译后的理解（见 [108](108-dual-truth-and-layered-retrieval.md)）。
+6. **提炼与探索解耦，且内嵌通用探索 Agent**：ingest 负责有损编译；查询侧除单轮 `ask` 外，**内置 ReAct 通用 agent**（`ask --agent`），用工具多步探索 wiki → raw → 代码（rg + tree-sitter 等）。这是产品能力，不是可选项外包。边界是：**不重造 IDE / 语言服务器**（类型级 gopls 等为可选组合），而不是「不做 agent」。详见 [109](109-agent-exploration.md)。

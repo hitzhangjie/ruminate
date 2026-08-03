@@ -55,10 +55,12 @@ ruminate/
 
 1. **Local-first**: All data on user's disk. No cloud dependency.
 2. **Git-native**: Wiki is a git repo. Every change is versioned and rollback-able.
-3. **Markdown as source of truth**: Wiki pages are plain Markdown. Human-readable with any editor (Obsidian, VS Code, etc.).
-4. **Provider abstraction**: LLM and embedding interfaces are abstracted so providers can be swapped (Ollama → DeepSeek → OpenAI) without changing core logic.
-5. **CLI first, then Web**: Core operations via CLI. Web UI layers on top via HTTP API.
-6. **Incremental adoption**: Start simple. Add features as proven necessary.
+3. **Markdown as portable store**: Wiki pages are plain Markdown. Human-readable with any editor (Obsidian, VS Code, etc.).
+4. **Dual truth**: `raw/` (and external code/docs) is **Evidence** (facts); `wiki/` is **Synthesis** (compiled understanding). Distillation is lossy — query paths must be able to fall back to evidence. See `docs/108-dual-truth-and-layered-retrieval.md`.
+5. **Compile vs explore**: Ingest compiles knowledge; query explores via **ReAct**. Code navigation defaults to **rg + tree-sitter** (including enclosing function/block); gopls/LSP is optional. See `docs/109-agent-exploration.md`.
+6. **Provider abstraction**: LLM and embedding interfaces are abstracted so providers can be swapped (Ollama → DeepSeek → OpenAI) without changing core logic.
+7. **CLI first, then Web**: Core operations via CLI. Web UI layers on top via HTTP API.
+8. **Incremental adoption**: Start simple. Add features as proven necessary.
 
 ## Development Commands
 

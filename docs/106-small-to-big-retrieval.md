@@ -106,8 +106,9 @@ Ruminate 的 pages 本身已经处于一个"中间态"——比 sentence chunk �
 
 尽管路线不同，Small-to-Big 的部分思想仍可借鉴：
 
-1. **检索后回填原文**：召回 concept/entity page 后，可以将关联的 raw 原文段落作为附件返回给 LLM，类似于"small=page, big=raw section"。
+1. **检索后回填原文**：召回 concept/entity page 后，可以将关联的 raw 原文段落作为附件返回给 LLM，类似于"small=page, big=raw section"。**已上升为产品协议**：见 [108-dual-truth-and-layered-retrieval.md](108-dual-truth-and-layered-retrieval.md) 的 L1→L2 回退，以及 contributing sources frontmatter。
 2. **多粒度混合检索**：同时在不同粒度建索引——concept（细）、summary（粗），查询时根据问题类型选择粒度或加权合并。
+3. **Agent 探索**：多步 tool call 比单次 parent 扩展更适合企业/代码场景，见 [109-agent-exploration.md](109-agent-exploration.md)。
 
 ## 实现要点
 

@@ -1,6 +1,6 @@
 # 任务进度追踪
 
-> 最后更新：2026-07-03
+> 最后更新：2026-08-04
 
 ---
 
@@ -15,6 +15,7 @@
 | Phase 4 | 巡检与 Web 服务 | 🔄 进行中 | 1/3 |
 | Phase 5 | Web 前端 | ⬜ 未开始 | 0/4 |
 | Phase 6 | 增强与打磨 (P1/P2) | ⬜ 未开始 | 0/4 |
+| Phase 7 | 双真相、分层召回与 ReAct Agent | ⬜ 规划中 | 0/12 |
 
 ---
 
@@ -144,6 +145,33 @@
 
 ---
 
+## Phase 7: 双真相、分层召回与 ReAct Agent (规划)
+
+**目标**：补上「蒸馏有损」缺口——Evidence 可回退；**内嵌 ReAct**；代码默认 **rg + tree-sitter**（含 enclosing）；gopls/LSP 可选。  
+**设计文档**：[108-dual-truth-and-layered-retrieval.md](108-dual-truth-and-layered-retrieval.md)、[109-agent-exploration.md](109-agent-exploration.md)、[101 修订](101-wiki-maintenance-model.md)
+
+| # | 任务 | 状态 | 负责人 | 备注 |
+|---|------|------|--------|------|
+| 7.1 | Contributing sources frontmatter | ⬜ | — | ingest 写入 `sources:` |
+| 7.2 | `ask --evidence wiki\|auto\|raw` | ⬜ | — | 无多步分层 |
+| 7.3 | Raw 独立检索 | ⬜ | — | 不与 wiki 混排 |
+| 7.4 | **ReAct 运行时** + tool registry | ⬜ | — | JSON tool-call；预算/trace |
+| 7.5 | Knowledge + file_grep/read（roots） | ⬜ | — | wiki_* / raw_* / rg |
+| 7.6 | **tree-sitter**：outline / symbol_search / **read_enclosing** | ⬜ | — | P0 代码智能；先 Go grammar |
+| 7.7 | `ask --agent` | ⬜ | — | 接 7.4–7.6；默认只读、无 gopls |
+| 7.8 | 更多 language grammars | ⬜ | — | py/ts/… 同一 tool API |
+| 7.9 | `ask --json` / 结构化 citations | ⬜ | — | |
+| 7.10 | 对外 `ruminate mcp` + skill | ⬜ | — | |
+| 7.11 | （可选）gopls / 多语言 LSP-MCP | ⬜ | — | 类型级精度；默认关 |
+| 7.12 | （可选）code_anchors + stale lint | ⬜ | — | |
+
+**可交付**：
+- `ask --agent`：wiki → raw → rg/tree-sitter → 包围函数体
+- 无 gopls 也可做代码核对；可选再挂 LSP
+- 答案标注 Synthesis vs Evidence vs Code
+
+---
+
 ## 状态标记说明
 
 | 标记 | 含义 |
@@ -167,3 +195,6 @@
 | 2026-07-02 | Phase 2 完成：LLM 集成与摄入 (Provider, Embedder, Ingest Engine, CLI) |
 | 2026-07-03 | Phase 3 完成：查询与检索 (FTS5 Search with snippets, AI Q&A with streaming, Answer writeback) |
 | 2026-07-03 | 任务 4.1 完成：Lint 引擎 (矛盾检测、孤立页面、过时内容、缺失链接) |
+| 2026-08-04 | 文档：双真相 + 分层召回 + Agent 探索设计（108/109）；修订 101；新增 Phase 7 |
+| 2026-08-04 | 109：选定内嵌 ReAct；file tools 可读代码/原文；Go 组合 gopls MCP；Phase 7 任务调整 |
+| 2026-08-04 | 109：代码默认改为 rg+tree-sitter；gopls 降为可选；enclosing 进 P0 |

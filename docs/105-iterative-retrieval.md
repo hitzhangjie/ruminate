@@ -99,9 +99,21 @@ Ruminate 的 iterative retrieval 已经通过 Query Expansion 和 HyDE 实现，
 这是一种务实的工程选择：在延迟、资源、质量三者之间，优先保证延迟和质量，接受适度的资源开销。
 对于本地知识库这种规模的搜索场景，这是合理的取舍。
 
+## 与「跨层 Agent 探索」的区别
+
+本文的 iterative / eager 策略解决的是 **同一层（主要是 Wiki）内的 recall**。  
+**跨层**（Wiki → raw → 代码）的 escalation 与通用 agent 集成见：
+
+- [108-dual-truth-and-layered-retrieval.md](108-dual-truth-and-layered-retrieval.md)
+- [109-agent-exploration.md](109-agent-exploration.md)
+
+二者正交，可组合：L1 内仍可用 expansion/HyDE；不够再下沉 L2/L3。
+
 ## 参考
 
 - [搜索优化方案](104-search-optimization.md) — 完整搜索管线文档
 - [Small-to-Big 检索](106-small-to-big-retrieval.md) — 小粒度索引、大上下文返回
 - [Ingest 与 Lint 职责分离](100-ingest-lint-separation.md) — Ingest 与 Lint 职责分离
-- [Wiki 维护模型](101-wiki-maintenance-model.md) — raw 为真相源 vs wiki 为真相源
+- [Wiki 维护模型](101-wiki-maintenance-model.md) — 双真相与维护入口
+- [双真相与分层召回](108-dual-truth-and-layered-retrieval.md)
+- [Agent 探索](109-agent-exploration.md)
