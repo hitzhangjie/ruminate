@@ -22,6 +22,9 @@ type stubWiki struct {
 func (s *stubWiki) Search(ctx context.Context, query string, topN int, effort wiki.SearchEffort) ([]wiki.SearchResult, error) {
 	return s.results, s.err
 }
+func (s *stubWiki) SearchRaw(query string, topN int) ([]wiki.SearchResult, error) {
+	return nil, nil
+}
 func (s *stubWiki) ReadByPath(path string) (*wiki.Page, error) {
 	if s.pages == nil {
 		return nil, errNotFound
@@ -128,7 +131,7 @@ func TestRetrieveContext(t *testing.T) {
 		}
 		engine := newTestEngine(sw, nil)
 
-		sources, err := engine.retrieveContext(context.Background(), "q", 10, "fast")
+		sources, err := engine.retrieveContext(context.Background(), "q", 10, wiki.SearchEffortFast, EvidenceWiki)
 		if err != nil {
 			t.Fatalf("retrieveContext() error: %v", err)
 		}
@@ -152,7 +155,7 @@ func TestRetrieveContext(t *testing.T) {
 		}
 		engine := newTestEngine(sw, nil)
 
-		sources, err := engine.retrieveContext(context.Background(), "q", 10, "fast")
+		sources, err := engine.retrieveContext(context.Background(), "q", 10, wiki.SearchEffortFast, EvidenceWiki)
 		if err != nil {
 			t.Fatalf("retrieveContext() error: %v", err)
 		}

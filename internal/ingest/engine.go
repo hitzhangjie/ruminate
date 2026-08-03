@@ -163,7 +163,7 @@ func (e *Engine) Ingest(ctx context.Context, sourcePath, sourceType string) erro
 		return fmt.Errorf("reading source: %w", err)
 	}
 
-	// 2. Save raw copy (also indexes in FTS5 for full-text search)
+	// 2. Save raw copy and index into raw_fts (L2 Evidence; not mixed with wiki L1)
 	if _, err := e.wiki.AddSource(src.SourceType, src.Title, []byte(src.Content)); err != nil {
 		return fmt.Errorf("saving raw source: %w", err)
 	}
@@ -230,10 +230,17 @@ func (e *Engine) analyze(ctx context.Context, src *Source) (*AnalysisResult, err
 	return parseAnalysisResponse(resp.Content)
 }
 
+// sourceRefFor returns a contributing-sources front-matter entry for this ingest.
+func (e *Engine) sourceRefFor(src *Source) wiki.SourceRef {
+	return wiki.NewSourceRef(e.wiki.RawSourcePath(src.SourceType, src.Title))
+}
+
 // createSummaryPage creates or updates the summary wiki page for the source.
 func (e *Engine) createSummaryPage(src *Source, analysis *AnalysisResult) error {
 	rawPath := e.wiki.RawSourcePath(src.SourceType, src.Title)
 	content := buildSummaryContent(src, analysis, rawPath)
+	// Dual-truth: record Evidence path in front matter (docs/108).
+	content = wiki.WithSources(content, src.Title, wiki.PageTypeSummary, []wiki.SourceRef{e.sourceRefFor(src)})
 
 	// Check if a summary for this source already exists
 	existing, err := e.wiki.Read(src.Title, wiki.PageTypeSummary)
@@ -243,15 +250,18 @@ func (e *Engine) createSummaryPage(src *Source, analysis *AnalysisResult) error 
 		return err
 	}
 
-	// Page exists — update it
+	// Page exists — update it (preserve any extra sources from prior ingests)
+	content = wiki.WithSources(content, src.Title, wiki.PageTypeSummary, existing.Sources)
 	_, err = e.wiki.Update(existing.Title, wiki.PageTypeSummary, content)
 	return err
 }
 
 // createEntityPages creates or updates entity pages extracted from the source.
 func (e *Engine) createEntityPages(src *Source, analysis *AnalysisResult) error {
+	ref := e.sourceRefFor(src)
 	for _, entity := range analysis.Entities {
 		content := buildEntityContent(entity, src)
+		content = wiki.WithSources(content, entity.Name, wiki.PageTypeEntity, []wiki.SourceRef{ref})
 
 		existing, err := e.wiki.Read(entity.Name, wiki.PageTypeEntity)
 		if err != nil {
@@ -262,8 +272,10 @@ func (e *Engine) createEntityPages(src *Source, analysis *AnalysisResult) error 
 			continue
 		}
 
-		// Update existing entity — append new reference section
+		// Update existing entity — append new reference section + merge sources
 		newContent := mergeEntityContent(existing.Content, entity, src)
+		newContent = wiki.WithSources(newContent, entity.Name, wiki.PageTypeEntity,
+			wiki.MergeSourceRefs(existing.Sources, ref))
 		if _, err := e.wiki.Update(existing.Title, wiki.PageTypeEntity, newContent); err != nil {
 			return fmt.Errorf("updating entity %q: %w", entity.Name, err)
 		}
@@ -273,8 +285,10 @@ func (e *Engine) createEntityPages(src *Source, analysis *AnalysisResult) error 
 
 // createConceptPages creates or updates concept pages extracted from the source.
 func (e *Engine) createConceptPages(src *Source, analysis *AnalysisResult) error {
+	ref := e.sourceRefFor(src)
 	for _, concept := range analysis.Concepts {
 		content := buildConceptContent(concept, src)
+		content = wiki.WithSources(content, concept.Name, wiki.PageTypeConcept, []wiki.SourceRef{ref})
 
 		existing, err := e.wiki.Read(concept.Name, wiki.PageTypeConcept)
 		if err != nil {
@@ -285,6 +299,8 @@ func (e *Engine) createConceptPages(src *Source, analysis *AnalysisResult) error
 		}
 
 		newContent := mergeConceptContent(existing.Content, concept, src)
+		newContent = wiki.WithSources(newContent, concept.Name, wiki.PageTypeConcept,
+			wiki.MergeSourceRefs(existing.Sources, ref))
 		if _, err := e.wiki.Update(existing.Title, wiki.PageTypeConcept, newContent); err != nil {
 			return fmt.Errorf("updating concept %q: %w", concept.Name, err)
 		}

@@ -16,11 +16,11 @@ import (
 
 // IndexManager manages both the human-readable index.md and the SQLite FTS5 index.
 //
-// IMPORTANT: pages_fts (SQLite FTS5) is the source of truth for SEARCH. Both `find` and
-// `ask` commands query pages_fts to locate relevant pages. index.md is a DERIVED
+// IMPORTANT: pages_fts (SQLite FTS5) is the source of truth for L1 (wiki) SEARCH.
+// Both `find` and `ask` query pages_fts for Synthesis pages. index.md is a DERIVED
 // human-readable directory — it is rebuilt from pages_fts (see rebuildIndexMd), never
-// the other way around. Raw sources are indexed only in pages_fts and do NOT appear
-// in index.md at all.
+// the other way around. Raw Evidence is indexed separately in raw_fts (L2) and must
+// not be mixed into wiki top-N ranking (docs/108).
 type IndexManager struct {
 	indexPath string // path to index.md
 	dbPath    string // path to the SQLite FTS5 database
@@ -71,19 +71,9 @@ func (im *IndexManager) Init() error {
 		return fmt.Errorf("writing index.md: %w", err)
 	}
 
-	// Open FTS5 database and create table
-	db, err := sql.Open("sqlite", im.dbPath)
-	if err != nil {
-		return fmt.Errorf("opening FTS database: %w", err)
-	}
-	im.db = db
-
-	if err := im.createFTSTable(); err != nil {
-		return fmt.Errorf("creating FTS table: %w", err)
-	}
-
-	if err := im.createVectorTable(); err != nil {
-		return fmt.Errorf("creating vector table: %w", err)
+	// Open FTS5 database and create tables
+	if err := im.open(); err != nil {
+		return fmt.Errorf("opening database: %w", err)
 	}
 
 	return nil
@@ -96,6 +86,24 @@ func (im *IndexManager) createFTSTable() error {
 			path,
 			title,
 			page_type,
+			content,
+			tokenize='porter unicode61'
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	return im.createRawFTSTable()
+}
+
+// createRawFTSTable creates the independent raw_fts table for Evidence (L2).
+// Raw is never mixed into pages_fts ranking — see docs/108.
+func (im *IndexManager) createRawFTSTable() error {
+	_, err := im.db.Exec(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS raw_fts USING fts5(
+			path,
+			title,
+			source_type,
 			content,
 			tokenize='porter unicode61'
 		)
@@ -278,7 +286,94 @@ func (im *IndexManager) open() error {
 	if err := im.createFTSTable(); err != nil {
 		return err
 	}
+	// createFTSTable also ensures raw_fts exists
 	return im.createVectorTable()
+}
+
+// IndexRaw inserts or replaces a raw Evidence document in raw_fts.
+func (im *IndexManager) IndexRaw(path, title, sourceType, content string) error {
+	if err := im.open(); err != nil {
+		return err
+	}
+	_, err := im.db.Exec("DELETE FROM raw_fts WHERE path = ?", path)
+	if err != nil {
+		return fmt.Errorf("deleting old raw FTS entry: %w", err)
+	}
+	_, err = im.db.Exec(
+		"INSERT INTO raw_fts (path, title, source_type, content) VALUES (?, ?, ?, ?)",
+		path, title, sourceType, enrichContentWithBigrams(content),
+	)
+	if err != nil {
+		return fmt.Errorf("inserting into raw_fts: %w", err)
+	}
+	return nil
+}
+
+// RemoveRaw removes a raw document from raw_fts.
+func (im *IndexManager) RemoveRaw(path string) error {
+	if err := im.open(); err != nil {
+		return err
+	}
+	_, err := im.db.Exec("DELETE FROM raw_fts WHERE path = ?", path)
+	if err != nil {
+		return fmt.Errorf("deleting from raw_fts: %w", err)
+	}
+	return nil
+}
+
+// SearchRaw performs full-text search over raw Evidence only.
+func (im *IndexManager) SearchRaw(query string, limit int) ([]SearchResult, error) {
+	if err := im.open(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	// Try AND semantics first, then OR fallback (same pattern as wiki FTS).
+	results, err := im.searchRawWithSnippets(query, limit)
+	if err != nil || len(results) == 0 {
+		orQ := toFTS5OrQuery(query)
+		if orQ != "" && orQ != query {
+			orResults, orErr := im.searchRawWithSnippets(orQ, limit)
+			if orErr == nil && len(orResults) > 0 {
+				return orResults, nil
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return results, nil
+}
+
+func (im *IndexManager) searchRawWithSnippets(query string, limit int) ([]SearchResult, error) {
+	// snippet(raw_fts, 3, ...) — content is column index 3
+	sqlQ := `SELECT path, title, source_type,
+		snippet(raw_fts, 3, '<b>', '</b>', '...', 32) AS snippet, rank
+		FROM raw_fts
+		WHERE raw_fts MATCH ?
+		ORDER BY rank
+		LIMIT ?`
+
+	rows, err := im.db.Query(sqlQ, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("searching raw_fts: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var r SearchResult
+		var sourceType string
+		if err := rows.Scan(&r.Path, &r.Title, &sourceType, &r.Snippet, &r.Rank); err != nil {
+			return nil, fmt.Errorf("scanning raw_fts result: %w", err)
+		}
+		r.Type = PageType("raw")
+		r.Snippet = CleanSnippet(r.Snippet)
+		results = append(results, r)
+	}
+	return results, rows.Err()
 }
 
 // AddPage adds a page to both index.md and the FTS5 index.

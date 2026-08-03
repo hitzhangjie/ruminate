@@ -16,6 +16,7 @@ import (
 // wiki.Manager implicitly satisfies this interface.
 type wikiManager interface {
 	Search(ctx context.Context, query string, topN int, effort wiki.SearchEffort) ([]wiki.SearchResult, error)
+	SearchRaw(query string, topN int) ([]wiki.SearchResult, error)
 	ReadByPath(path string) (*wiki.Page, error)
 	Read(title string, pageType wiki.PageType) (*wiki.Page, error)
 	Create(title string, pageType wiki.PageType, content string) (*wiki.Page, error)

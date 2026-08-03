@@ -15,6 +15,8 @@ type AskOptions struct {
 	Save     bool              // Save the Q&A result as a wiki synthesis page.
 	NoStream bool              // Disable streaming output.
 	Effort   wiki.SearchEffort // Query expansion effort level (fast/balanced/thorough).
+	// Evidence controls L1→L2 layered retrieval (wiki|auto|raw). See docs/108.
+	Evidence EvidenceMode
 }
 
 // AskResult is the final result of an AI Q&A request.
@@ -23,11 +25,15 @@ type AskResult struct {
 	Sources []Source
 }
 
-// Source represents a wiki page used as context for an answer.
+// Source represents a wiki page or raw evidence used as context for an answer.
 type Source struct {
 	Title   string
 	Path    string
 	Snippet string
+	// Layer is "wiki" (Synthesis) or "raw" (Evidence). Empty means wiki.
+	Layer string
+	// Content is optional preloaded full text (used for raw evidence to avoid re-read).
+	Content string
 }
 
 // AskChunk is a streaming fragment of an answer in progress.
@@ -46,6 +52,7 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 	topN := DefaultTopN
 	save := false
 	effort := wiki.SearchEffortFast
+	evidence := EvidenceAuto
 	if opts != nil {
 		if opts.TopN > 0 {
 			topN = opts.TopN
@@ -54,16 +61,19 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 		if opts.Effort != "" {
 			effort = opts.Effort
 		}
+		if opts.Evidence != "" {
+			evidence = opts.Evidence
+		}
 	}
 
 	if e.tracer != nil {
 		e.tracer.Begin("ask", "provider", e.llmCfg.Provider, "model", e.llmCfg.Model,
-			"query", question, "topN", topN, "effort", string(effort))
+			"query", question, "topN", topN, "effort", string(effort), "evidence", string(evidence))
 		defer e.tracer.End("saved", save)
 	}
 
-	// 1. Search for relevant pages
-	sources, err := e.retrieveContext(ctx, question, topN, effort)
+	// 1. Search for relevant pages (L1) + optional Evidence escalation (L2)
+	sources, err := e.retrieveContext(ctx, question, topN, effort, evidence)
 	if err != nil {
 		if e.tracer != nil {
 			e.tracer.Error(err)
@@ -136,6 +146,7 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 	topN := DefaultTopN
 	save := false
 	effort := wiki.SearchEffortFast
+	evidence := EvidenceAuto
 	if opts != nil {
 		if opts.TopN > 0 {
 			topN = opts.TopN
@@ -144,16 +155,19 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 		if opts.Effort != "" {
 			effort = opts.Effort
 		}
+		if opts.Evidence != "" {
+			evidence = opts.Evidence
+		}
 	}
 
 	if e.tracer != nil {
 		e.tracer.Begin("ask", "provider", e.llmCfg.Provider, "model", e.llmCfg.Model,
-			"query", question, "topN", topN, "effort", string(effort))
+			"query", question, "topN", topN, "effort", string(effort), "evidence", string(evidence))
 		defer e.tracer.End("saved", save)
 	}
 
-	// 1. Search for relevant pages
-	sources, err := e.retrieveContext(ctx, question, topN, effort)
+	// 1. Search for relevant pages (L1) + optional Evidence escalation (L2)
+	sources, err := e.retrieveContext(ctx, question, topN, effort, evidence)
 	if err != nil {
 		if e.tracer != nil {
 			e.tracer.Error(err)
@@ -238,8 +252,9 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 	return askCh, nil
 }
 
-// retrieveContext searches the wiki for pages relevant to the question.
-func (e *Engine) retrieveContext(ctx context.Context, question string, topN int, effort wiki.SearchEffort) ([]Source, error) {
+// retrieveContext searches the wiki for pages relevant to the question,
+// auto-escalating to raw Evidence when needed (docs/108).
+func (e *Engine) retrieveContext(ctx context.Context, question string, topN int, effort wiki.SearchEffort, evidence EvidenceMode) ([]Source, error) {
 	results, err := e.wiki.Search(ctx, question, topN, effort)
 	if err != nil {
 		return nil, err
@@ -254,35 +269,100 @@ func (e *Engine) retrieveContext(ctx context.Context, question string, topN int,
 			Title:   r.Title,
 			Path:    r.Path,
 			Snippet: stripTags(r.Snippet),
+			Layer:   "wiki",
 		})
+	}
+
+	switch evidence {
+	case EvidenceRaw:
+		sources = e.escalateEvidence(sources, question)
+	case EvidenceAuto:
+		if needsEvidenceEscalation(question, sources) {
+			if e.tracer != nil {
+				e.tracer.Begin("evidence_escalation", "reason", "auto")
+			}
+			sources = e.escalateEvidence(sources, question)
+			if e.tracer != nil {
+				e.tracer.End("sources", len(sources))
+			}
+		}
 	}
 
 	return sources, nil
 }
 
+// escalateEvidence attaches L2 raw content for hit wiki pages.
+func (e *Engine) escalateEvidence(wikiSources []Source, question string) []Source {
+	// Prefer concrete *wiki.Manager methods when available.
+	type fullReader interface {
+		ReadByPath(path string) (*wiki.Page, error)
+		SearchRaw(query string, topN int) ([]wiki.SearchResult, error)
+	}
+	if r, ok := e.wiki.(fullReader); ok {
+		return attachEvidence(r, wikiSources, question, 48*1024)
+	}
+	// Fallback: only ReadByPath via wikiManager interface
+	return attachEvidence(&readOnlyAdapter{e.wiki}, wikiSources, question, 48*1024)
+}
+
+// readOnlyAdapter adapts wikiManager to rawLayerReader without SearchRaw.
+type readOnlyAdapter struct {
+	wm wikiManager
+}
+
+func (a *readOnlyAdapter) ReadByPath(path string) (*wiki.Page, error) {
+	return a.wm.ReadByPath(path)
+}
+
+func (a *readOnlyAdapter) SearchRaw(query string, topN int) ([]wiki.SearchResult, error) {
+	return nil, nil
+}
+
 // buildAskMessages constructs the LLM prompt with context and question.
 func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Message {
 	var contextBuilder strings.Builder
-	contextBuilder.WriteString("## Relevant Wiki Pages\n\n")
+	contextBuilder.WriteString("## Relevant Context\n\n")
 	for i, src := range sources {
-		page, err := e.wiki.ReadByPath(src.Path)
-		if err != nil {
-			continue
+		layer := src.Layer
+		if layer == "" {
+			layer = "wiki"
 		}
+		label := "Wiki (Synthesis)"
+		if layer == "raw" {
+			label = "Raw (Evidence)"
+		}
+		fmt.Fprintf(&contextBuilder, "### Source %d: %s [%s]\n\n", i+1, src.Title, label)
 
-		fmt.Fprintf(&contextBuilder, "### Source %d: %s\n\n", i+1, src.Title)
-		contextBuilder.WriteString(page.Content)
+		if src.Content != "" {
+			contextBuilder.WriteString(src.Content)
+		} else {
+			page, err := e.wiki.ReadByPath(src.Path)
+			if err != nil {
+				continue
+			}
+			contextBuilder.WriteString(page.Content)
+		}
 		contextBuilder.WriteString("\n\n---\n\n")
 	}
 
 	var refList strings.Builder
 	for i, src := range sources {
-		fmt.Fprintf(&refList, "  - Source %d: [[%s]]\n", i+1, src.Title)
+		layer := src.Layer
+		if layer == "" {
+			layer = "wiki"
+		}
+		fmt.Fprintf(&refList, "  - Source %d: [[%s]] (%s · %s)\n", i+1, src.Title, layer, src.Path)
 	}
 
-	systemPrompt := fmt.Sprintf(`You are a knowledgeable research assistant answering questions based on the user's personal wiki.
+	systemPrompt := fmt.Sprintf(`You are a knowledgeable research assistant answering questions based on the user's personal knowledge base.
 
-Below are relevant wiki pages that may contain the answer. Use ONLY the provided context to answer the question. If the context doesn't contain enough information, say so honestly — do not fabricate facts.
+The knowledge base has two layers (dual truth):
+- **Wiki (Synthesis)**: compiled understanding — dense but may omit details (lossy distillation).
+- **Raw (Evidence)**: original archived sources — use for precise quotes, defaults, signatures.
+
+Use ONLY the provided context. If the context doesn't contain enough information, say so honestly — do not fabricate facts.
+When Evidence and Synthesis disagree, prefer Evidence for factual details and note the discrepancy.
+Label whether key claims come from Synthesis vs Evidence when it matters (API behavior, defaults, dates, numbers).
 
 ## Citation Rules
 
@@ -291,7 +371,7 @@ When citing a source, use the page TITLE in [[double brackets]]. For example:
   - "[[垃圾回收]] is an automatic memory management technique."
 
 IMPORTANT: Do NOT use numeric references like [[1]] or [[3]] — these are ambiguous.
-Use the actual page title every time.
+Use the actual page title every time. For raw evidence you may also cite the path.
 
 ## Reference List (for your reference — cite by title, not number)
 

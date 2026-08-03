@@ -32,10 +32,14 @@ type Page struct {
 	Path string
 	// Type is the page category.
 	Type PageType
-	// Content is the full Markdown content.
+	// Content is the full Markdown content (including front matter if present).
 	Content string
 	// Links are the WikiLink targets found in the content.
 	Links []string
+	// Sources are contributing Evidence paths from YAML front matter (docs/108).
+	Sources []SourceRef
+	// FrontMatter is the parsed YAML front matter (may be empty).
+	FrontMatter FrontMatter
 }
 
 // Manager handles wiki page CRUD and directory structure.
@@ -183,13 +187,15 @@ func (m *Manager) IsInitialized() bool {
 }
 
 // AddSource saves raw source material to raw/<sourceType>/<filename>.md
-// and indexes it in FTS5 for full-text search.
+// and indexes it in the separate raw_fts table (not mixed with wiki L1 search).
 // The raw/<sourceType>/ directory is created on-demand if it doesn't exist.
 // sourceType is a user-defined label: "article", "paper", "note", "book", etc.
 // title is used as the filename (sanitized).
 //
 // Returns the relative path of the saved source file (from wiki root).
 func (m *Manager) AddSource(sourceType string, title string, content []byte) (string, error) {
+	m.ensureComponents()
+
 	if sourceType == "" {
 		return "", fmt.Errorf("sourceType is required")
 	}
@@ -210,6 +216,12 @@ func (m *Manager) AddSource(sourceType string, title string, content []byte) (st
 	}
 
 	relPath := filepath.ToSlash(filepath.Join("raw", sourceType, filename))
+
+	// Index into raw_fts (L2 Evidence layer) — never pages_fts (L1 Synthesis).
+	if err := m.index.IndexRaw(relPath, title, sourceType, string(content)); err != nil {
+		return relPath, fmt.Errorf("indexing raw source: %w", err)
+	}
+
 	return relPath, nil
 }
 
@@ -307,16 +319,11 @@ func (m *Manager) Read(title string, pageType PageType) (*Page, error) {
 		return nil, fmt.Errorf("reading page: %w", err)
 	}
 
-	return &Page{
-		Title:   title,
-		Path:    filepath.Join("wiki", string(pageType), filename),
-		Type:    pageType,
-		Content: string(content),
-		Links:   ParseWikiLinks(string(content)),
-	}, nil
+	return pageFromContent(title, filepath.Join("wiki", string(pageType), filename), pageType, string(content)), nil
 }
 
 // ReadByPath reads a wiki page using its relative path from wiki root.
+// Works for both wiki pages and raw sources under the wiki root.
 func (m *Manager) ReadByPath(relPath string) (*Page, error) {
 	m.ensureComponents()
 
@@ -335,15 +342,31 @@ func (m *Manager) ReadByPath(relPath string) (*Page, error) {
 	pageType := PageTypeSummary // default
 	if len(parts) >= 3 && parts[0] == "wiki" {
 		pageType = PageType(parts[1])
+	} else if parts[0] == "raw" {
+		pageType = PageType("raw")
 	}
 
+	return pageFromContent(title, relPath, pageType, string(content)), nil
+}
+
+// pageFromContent builds a Page and populates front matter / sources.
+func pageFromContent(title, path string, pageType PageType, content string) *Page {
+	fm, _, err := ParseFrontMatter(content)
+	if err != nil {
+		fm = FrontMatter{}
+	}
+	if fm.Title != "" {
+		title = fm.Title
+	}
 	return &Page{
-		Title:   title,
-		Path:    relPath,
-		Type:    pageType,
-		Content: string(content),
-		Links:   ParseWikiLinks(string(content)),
-	}, nil
+		Title:       title,
+		Path:        path,
+		Type:        pageType,
+		Content:     content,
+		Links:       ParseWikiLinks(content),
+		Sources:     fm.Sources,
+		FrontMatter: fm,
+	}
 }
 
 // Update updates an existing wiki page's content.
@@ -455,13 +478,12 @@ func (m *Manager) List(pageType PageType) ([]*Page, error) {
 			return fmt.Errorf("reading %s: %w", path, err)
 		}
 
-		pages = append(pages, &Page{
-			Title:   strings.TrimSuffix(info.Name(), ".md"),
-			Path:    relPath,
-			Type:    pt,
-			Content: string(content),
-			Links:   ParseWikiLinks(string(content)),
-		})
+		pages = append(pages, pageFromContent(
+			strings.TrimSuffix(info.Name(), ".md"),
+			relPath,
+			pt,
+			string(content),
+		))
 		return nil
 	})
 
@@ -505,7 +527,7 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-// Search searches wiki pages and raw sources.
+// Search searches wiki pages (L1 Synthesis only).
 //
 // When an embedder is configured, it uses vector-first hybrid retrieval:
 // vector similarity is the primary signal, and FTS5 AND results act as a
@@ -514,6 +536,7 @@ func (m *Manager) Close() error {
 //
 // When no embedder is configured, it falls back to FTS5 with AND→OR fallback.
 //
+// Raw Evidence is searched separately via SearchRaw (see docs/108).
 // This is the primary search entry point for both simple lookups (find command)
 // and context retrieval for AI-powered Q&A (ask command).
 func (m *Manager) Search(ctx context.Context, query string, topN int, effort SearchEffort) ([]SearchResult, error) {
@@ -523,6 +546,25 @@ func (m *Manager) Search(ctx context.Context, query string, topN int, effort Sea
 		return m.hybridSearch(ctx, query, topN, effort)
 	}
 	return m.ftsWithFallback(query, topN)
+}
+
+// SearchRaw searches the Evidence layer (raw/) via the independent raw_fts index.
+// Results are never mixed into L1 wiki top-N ranking.
+func (m *Manager) SearchRaw(query string, topN int) ([]SearchResult, error) {
+	m.ensureComponents()
+	if topN <= 0 {
+		topN = 10
+	}
+	return m.index.SearchRaw(query, topN)
+}
+
+// ListPageSources returns contributing sources for a wiki page path.
+func (m *Manager) ListPageSources(relPath string) ([]SourceRef, error) {
+	page, err := m.ReadByPath(relPath)
+	if err != nil {
+		return nil, err
+	}
+	return page.Sources, nil
 }
 
 // hybridSearch implements vector-first hybrid retrieval with MMR diversity.
@@ -908,10 +950,11 @@ func sanitizeFilename(title string) string {
 
 // Reindex rebuilds all FTS entries with CJK bigram enrichment. This is needed
 // when upgrading from a version that did not have CJK bigram support.
+// Also rebuilds the independent raw_fts Evidence index.
 func (m *Manager) Reindex() error {
 	m.ensureComponents()
 
-	// Reindex wiki pages
+	// Reindex wiki pages (L1)
 	pages, err := m.List("")
 	if err != nil {
 		return fmt.Errorf("listing pages: %w", err)
@@ -919,6 +962,29 @@ func (m *Manager) Reindex() error {
 	for _, p := range pages {
 		if err := m.index.ReindexContent(p.Path, p.Title, string(p.Type), p.Content); err != nil {
 			return fmt.Errorf("reindexing page %s: %w", p.Path, err)
+		}
+	}
+
+	// Reindex raw sources (L2 Evidence)
+	sources, err := m.ListSources("")
+	if err != nil {
+		return fmt.Errorf("listing raw sources: %w", err)
+	}
+	for _, rel := range sources {
+		full := filepath.Join(m.root, rel)
+		data, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		title := strings.TrimSuffix(filepath.Base(rel), ".md")
+		// sourceType is the first path segment under raw/
+		sourceType := "unknown"
+		parts := strings.SplitN(filepath.ToSlash(rel), "/", 3)
+		if len(parts) >= 2 {
+			sourceType = parts[1]
+		}
+		if err := m.index.IndexRaw(rel, title, sourceType, string(data)); err != nil {
+			return fmt.Errorf("reindexing raw %s: %w", rel, err)
 		}
 	}
 
@@ -930,12 +996,31 @@ const defaultSchema = `# Wiki Schema
 
 This file defines the structure and writing conventions for this wiki.
 
+## Dual truth
+
+- **Evidence** (` + "`raw/`" + `): original archived sources — facts
+- **Synthesis** (` + "`wiki/`" + `): compiled understanding — may be lossy
+
 ## Page Types
 
 - **summary**: Source material summaries
 - **entity**: Entities (people, events, terms, etc.)
 - **concept**: Concepts / themes
 - **synthesis**: Synthesis / comparison / review pages
+
+## Front matter (contributing sources)
+
+Wiki pages should declare Evidence origins:
+
+` + "```yaml" + `
+---
+title: Example
+type: entities
+sources:
+  - path: raw/article/example.md
+    ingested_at: 2026-08-04
+---
+` + "```" + `
 
 ## Naming
 

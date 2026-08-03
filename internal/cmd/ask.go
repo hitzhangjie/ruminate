@@ -5,41 +5,56 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/hitzhangjie/ruminate/internal/agent"
+	"github.com/hitzhangjie/ruminate/internal/config"
+	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/query"
 	"github.com/hitzhangjie/ruminate/internal/trace"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
 var (
-	askSave     bool
-	askNoStream bool
-	askTopN     int
-	askEffort   string
+	askSave      bool
+	askNoStream  bool
+	askTopN      int
+	askEffort    string
+	askEvidence  string
+	askAgent     bool
+	askMaxSteps  int
+	askAgentRoot []string
 )
 
 var askCmd = &cobra.Command{
 	Use:   "ask <question>",
 	Short: "Ask a question and get AI-synthesized answer from wiki",
 	Long: `Search relevant wiki pages and use LLM to synthesize
-	a comprehensive answer with citations.
+a comprehensive answer with citations.
 
-The ask pipeline:
-  1. Search wiki pages using FTS5 full-text search
-  2. Retrieve top-N most relevant page contents
-  3. Build LLM prompt with context pages + question
-  4. Stream the synthesized answer (or output all at once with --no-stream)
+The ask pipeline (default):
+  1. Search wiki pages using hybrid/FTS retrieval (L1 Synthesis)
+  2. Auto-escalate to raw Evidence when needed (L2; configurable via --evidence)
+  3. Build LLM prompt with context + question
+  4. Stream the synthesized answer (or --no-stream)
   5. Answer includes citations in [[page]] notation
+
+Agent mode (--agent): multi-step ReAct exploration (docs/109).
+  Uses tools: wiki_*, raw_*, file_grep/read, symbol_search, read_enclosing.
+  Default read-only; code intelligence is syntactic (go/ast), not gopls.
 
 Examples:
   ruminate ask "What is RAG?"
-  ruminate ask --save "How does FTS5 work?"
-  ruminate ask --top-n 10 "Explain the attention mechanism"`,
+  ruminate ask --evidence auto "原文默认超时是多少？"
+  ruminate ask --agent "Reconcile 会不会阻塞？"
+  ruminate ask --agent --agent-root /path/to/code "Where is Hello defined?"
+  ruminate ask --save "How does FTS5 work?"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		question := args[0]
+		question := strings.Join(args, " ")
 
 		// Load configuration
 		wikiName, _ := cmd.Flags().GetString("wiki")
@@ -48,25 +63,9 @@ Examples:
 			return fmt.Errorf("loading config: %w", err)
 		}
 
-		// Create query engine (internally initializes wiki.Manager)
-		engine, err := query.NewEngine(cfg)
-		if err != nil {
-			return err
-		}
-
-		// Attach tracer for pipeline observability (verbose from CLI flag)
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		tr := trace.New(verbose)
-		engine.SetTracer(tr)
 		defer tr.Flush(os.Stderr)
-
-		effort := parseEffort(askEffort)
-		opts := &query.AskOptions{
-			TopN:     askTopN,
-			Save:     askSave,
-			NoStream: askNoStream,
-			Effort:   effort,
-		}
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -78,6 +77,26 @@ Examples:
 			<-sigCh
 			cancel()
 		}()
+
+		if askAgent {
+			return runAgent(ctx, cfg, question, tr)
+		}
+
+		// Create query engine (internally initializes wiki.Manager)
+		engine, err := query.NewEngine(cfg)
+		if err != nil {
+			return err
+		}
+		engine.SetTracer(tr)
+
+		effort := parseEffort(askEffort)
+		opts := &query.AskOptions{
+			TopN:     askTopN,
+			Save:     askSave,
+			NoStream: askNoStream,
+			Effort:   effort,
+			Evidence: query.ParseEvidenceMode(askEvidence),
+		}
 
 		if askNoStream {
 			return runAskNonStream(ctx, engine, question, opts)
@@ -91,6 +110,10 @@ func init() {
 	askCmd.Flags().BoolVar(&askNoStream, "no-stream", false, "Disable streaming output (wait for full answer)")
 	askCmd.Flags().IntVarP(&askTopN, "top-n", "n", query.DefaultTopN, "Number of diverse search results to use as LLM context")
 	askCmd.Flags().StringVar(&askEffort, "effort", "fast", "Search effort level: fast (no expansion), balanced (query expansion), thorough (HyDE)")
+	askCmd.Flags().StringVar(&askEvidence, "evidence", "auto", "Evidence layer: auto (escalate when needed), raw (always attach sources), wiki (L1 only)")
+	askCmd.Flags().BoolVar(&askAgent, "agent", false, "Use multi-step ReAct agent (wiki/raw/code tools; read-only)")
+	askCmd.Flags().IntVar(&askMaxSteps, "max-steps", 12, "Max ReAct steps when --agent is set")
+	askCmd.Flags().StringArrayVar(&askAgentRoot, "agent-root", nil, "Extra filesystem root the agent may read (repeatable); wiki/raw always included")
 }
 
 // parseEffort converts a CLI effort string to a wiki.SearchEffort value.
@@ -104,6 +127,72 @@ func parseEffort(s string) wiki.SearchEffort {
 	default:
 		return wiki.SearchEffortFast
 	}
+}
+
+// runAgent runs the embedded ReAct explorer.
+func runAgent(ctx context.Context, cfg *config.RuntimeConfig, question string, tr *trace.Tracer) error {
+	mgr, err := wiki.NewManagerFromConfig(cfg.WikiPath, cfg.LLM, cfg.Embedding)
+	if err != nil {
+		return err
+	}
+	defer mgr.Close()
+	if !mgr.IsInitialized() {
+		return fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
+	}
+
+	provider, err := llm.NewProvider(cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model, cfg.LLM.APIKey)
+	if err != nil {
+		return fmt.Errorf("LLM provider: %w", err)
+	}
+
+	ex := agent.NewExplorer(mgr, provider, cfg.LLM)
+	ex.SetTracer(tr)
+
+	roots := []string{mgr.WikiDir(), mgr.RawDir(), mgr.Root()}
+	roots = append(roots, askAgentRoot...)
+
+	fmt.Printf("Agent exploring: %s\n\n", question)
+
+	opts := &agent.Options{
+		MaxSteps: askMaxSteps,
+		WallTime: 120 * time.Second,
+		Roots:    roots,
+		Save:     askSave,
+		OnStep: func(s agent.Step) {
+			if s.Final {
+				fmt.Fprintf(os.Stderr, "  [step %d] final_answer\n", s.Index)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "  [step %d] %s (%s)\n", s.Index, s.Action, s.Duration.Round(time.Millisecond))
+		},
+	}
+
+	result, err := ex.Run(ctx, question, opts)
+	if err != nil {
+		return fmt.Errorf("agent: %w", err)
+	}
+
+	fmt.Println(result.Answer)
+	fmt.Println()
+
+	if len(result.Citations) > 0 {
+		fmt.Println("---")
+		fmt.Println("Citations:")
+		for _, c := range result.Citations {
+			layer := c.Layer
+			if layer == "" {
+				layer = "?"
+			}
+			fmt.Printf("  - [%s] %s (%s)\n", layer, c.Title, c.Path)
+		}
+	}
+	if result.Truncated {
+		fmt.Println("\n(note: agent stopped due to step/time budget)")
+	}
+	if askSave {
+		fmt.Println("\nQ&A saved to wiki synthesis page.")
+	}
+	return nil
 }
 
 // runAskNonStream performs a blocking ask and prints the full answer at once.
@@ -124,7 +213,11 @@ func runAskNonStream(ctx context.Context, engine *query.Engine, question string,
 		fmt.Println("---")
 		fmt.Println("Sources:")
 		for _, src := range result.Sources {
-			fmt.Printf("  - %s (%s)\n", src.Title, src.Path)
+			layer := src.Layer
+			if layer == "" {
+				layer = "wiki"
+			}
+			fmt.Printf("  - [%s] %s (%s)\n", layer, src.Title, src.Path)
 		}
 	}
 
@@ -160,7 +253,11 @@ func runAskStream(ctx context.Context, engine *query.Engine, question string, op
 	if len(sources) > 0 {
 		fmt.Println("\nSources:")
 		for _, src := range sources {
-			fmt.Printf("  - %s (%s)\n", src.Title, src.Path)
+			layer := src.Layer
+			if layer == "" {
+				layer = "wiki"
+			}
+			fmt.Printf("  - [%s] %s (%s)\n", layer, src.Title, src.Path)
 		}
 	}
 

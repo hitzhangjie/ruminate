@@ -15,7 +15,7 @@
 | Phase 4 | 巡检与 Web 服务 | 🔄 进行中 | 1/3 |
 | Phase 5 | Web 前端 | ⬜ 未开始 | 0/4 |
 | Phase 6 | 增强与打磨 (P1/P2) | ⬜ 未开始 | 0/4 |
-| Phase 7 | 双真相、分层召回与 ReAct Agent | ⬜ 规划中 | 0/12 |
+| Phase 7 | 双真相、分层召回与 ReAct Agent | 🔄 进行中 | 7/12 |
 
 ---
 
@@ -152,14 +152,14 @@
 
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
-| 7.1 | Contributing sources frontmatter | ⬜ | — | ingest 写入 `sources:` |
-| 7.2 | `ask --evidence wiki\|auto\|raw` | ⬜ | — | 无多步分层 |
-| 7.3 | Raw 独立检索 | ⬜ | — | 不与 wiki 混排 |
-| 7.4 | **ReAct 运行时** + tool registry | ⬜ | — | JSON tool-call；预算/trace |
-| 7.5 | Knowledge + file_grep/read（roots） | ⬜ | — | wiki_* / raw_* / rg |
-| 7.6 | **tree-sitter**：outline / symbol_search / **read_enclosing** | ⬜ | — | P0 代码智能；先 Go grammar |
-| 7.7 | `ask --agent` | ⬜ | — | 接 7.4–7.6；默认只读、无 gopls |
-| 7.8 | 更多 language grammars | ⬜ | — | py/ts/… 同一 tool API |
+| 7.1 | Contributing sources frontmatter | ✅ | — | ingest 写入 `sources:`；`wiki.ParseFrontMatter` |
+| 7.2 | `ask --evidence wiki\|auto\|raw` | ✅ | — | L1→L2 无多步分层 |
+| 7.3 | Raw 独立检索 | ✅ | — | `raw_fts`；`SearchRaw`；不与 wiki 混排 |
+| 7.4 | **ReAct 运行时** + tool registry | ✅ | — | `internal/agent`；JSON tool-call；预算/trace |
+| 7.5 | Knowledge + file_grep/read（roots） | ✅ | — | wiki_* / raw_* / rg + 内置 grep 回退 |
+| 7.6 | **代码智能**：outline / symbol_search / **read_enclosing** | ✅ | — | P0 用 go/ast（Go）；同 tool API，tree-sitter 多语言见 7.8 |
+| 7.7 | `ask --agent` | ✅ | — | `--agent-root`、`--max-steps`；默认只读、无 gopls |
+| 7.8 | 更多 language grammars | ⬜ | — | py/ts/… 同一 tool API（tree-sitter） |
 | 7.9 | `ask --json` / 结构化 citations | ⬜ | — | |
 | 7.10 | 对外 `ruminate mcp` + skill | ⬜ | — | |
 | 7.11 | （可选）gopls / 多语言 LSP-MCP | ⬜ | — | 类型级精度；默认关 |
@@ -198,3 +198,4 @@
 | 2026-08-04 | 文档：双真相 + 分层召回 + Agent 探索设计（108/109）；修订 101；新增 Phase 7 |
 | 2026-08-04 | 109：选定内嵌 ReAct；file tools 可读代码/原文；Go 组合 gopls MCP；Phase 7 任务调整 |
 | 2026-08-04 | 109：代码默认改为 rg+tree-sitter；gopls 降为可选；enclosing 进 P0 |
+| 2026-08-04 | Phase 7.1–7.7 实现：sources frontmatter、evidence 分层、raw_fts、ReAct agent（go/ast 代码工具） |
