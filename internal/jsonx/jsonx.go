@@ -49,31 +49,98 @@ func CleanArray(raw string) string {
 	return s
 }
 
-// stripFences removes markdown code fences from s. It handles:
+// stripFences removes an *outer* markdown code fence wrapping the payload.
+// It handles:
 //   - ```json … ```
 //   - ``` … ```
-//   - leading/trailing text that is not part of the fence
+//   - optional preamble text before the opening fence
+//
+// Important: fences that appear *inside* an already-started JSON value
+// (e.g. a Go code sample in final_answer: "…\n```go\nfunc f(){}\n```")
+// must NOT be stripped. Doing so was the root cause of intermittent
+// parse_error on otherwise-valid decision JSON.
 func stripFences(s string) string {
-	// Case 1: ```json ... ```
-	if idx := strings.Index(s, "```json"); idx >= 0 {
-		start := idx + len("```json")
-		// Skip a trailing newline after the opening fence
-		if len(s) > start && s[start] == '\n' {
-			start++
-		}
-		if end := strings.Index(s[start:], "```"); end >= 0 {
-			s = s[start : start+end]
-		}
-	} else if idx := strings.Index(s, "```"); idx >= 0 {
-		start := idx + len("```")
-		if len(s) > start && s[start] == '\n' {
-			start++
-		}
-		if end := strings.Index(s[start:], "```"); end >= 0 {
-			s = s[start : start+end]
-		}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
 	}
-	return strings.TrimSpace(s)
+
+	// Already looks like a JSON value: keep intact. Inner ``` fences are
+	// data, not wrappers.
+	if s[0] == '{' || s[0] == '[' {
+		return s
+	}
+
+	// Only treat a fence as outer if it appears before any JSON start char.
+	// Otherwise the fence is embedded in preamble/prose or string content.
+	jsonStart := indexJSONStart(s)
+
+	// Prefer ```json over bare ```.
+	if idx := strings.Index(s, "```json"); idx >= 0 {
+		if jsonStart >= 0 && jsonStart < idx {
+			return s
+		}
+		start := idx + len("```json")
+		// Skip optional language-tag whitespace and the first newline.
+		start = skipFenceHeader(s, start)
+		if end := strings.Index(s[start:], "```"); end >= 0 {
+			return strings.TrimSpace(s[start : start+end])
+		}
+		return strings.TrimSpace(s[start:])
+	}
+
+	if idx := strings.Index(s, "```"); idx >= 0 {
+		if jsonStart >= 0 && jsonStart < idx {
+			return s
+		}
+		start := idx + len("```")
+		start = skipFenceHeader(s, start)
+		if end := strings.Index(s[start:], "```"); end >= 0 {
+			return strings.TrimSpace(s[start : start+end])
+		}
+		return strings.TrimSpace(s[start:])
+	}
+	return s
+}
+
+// indexJSONStart returns the index of the first '{' or '[', or -1.
+func indexJSONStart(s string) int {
+	iObj := strings.IndexByte(s, '{')
+	iArr := strings.IndexByte(s, '[')
+	switch {
+	case iObj < 0:
+		return iArr
+	case iArr < 0:
+		return iObj
+	case iObj < iArr:
+		return iObj
+	default:
+		return iArr
+	}
+}
+
+// skipFenceHeader advances past an optional language tag and the newline that
+// ends the opening fence line (```json\n or ```go\n or ```\n).
+func skipFenceHeader(s string, start int) int {
+	// Consume the rest of the fence line (language tag, spaces) up to newline.
+	for start < len(s) {
+		c := s[start]
+		if c == '\n' {
+			return start + 1
+		}
+		if c == '\r' {
+			if start+1 < len(s) && s[start+1] == '\n' {
+				return start + 2
+			}
+			return start + 1
+		}
+		// Only skip typical fence-header chars; stop if we hit JSON early.
+		if c == '{' || c == '[' {
+			return start
+		}
+		start++
+	}
+	return start
 }
 
 // extractJSON finds the first open bracket and returns the substring up to its

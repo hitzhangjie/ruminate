@@ -37,6 +37,18 @@ func TestStripFences(t *testing.T) {
 			input: `  {"key": "value"}  `,
 			want:  `{"key": "value"}`,
 		},
+		{
+			name: "inner go fence must not be stripped",
+			// Regression: final_answer contains ```go … ``` code sample.
+			// stripFences used to carve out only the Go body and break JSON.
+			input: `{"thought":"done","final_answer":"see:\n\n` + "```go\nfunc Errorf() {\n    return nil\n}\n```\n" + `","references":[]}`,
+			want:  `{"thought":"done","final_answer":"see:\n\n` + "```go\nfunc Errorf() {\n    return nil\n}\n```\n" + `","references":[]}`,
+		},
+		{
+			name:  "preamble then fence still strips",
+			input: "Here is the JSON:\n```json\n{\"key\": \"value\"}\n```",
+			want:  `{"key": "value"}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -228,6 +240,43 @@ func TestRealWorldOllamaFailure(t *testing.T) {
 	refs, ok := result["references"].([]any)
 	if !ok || len(refs) != 1 {
 		t.Errorf("references broken: %v", result["references"])
+	}
+}
+
+// TestParseErrorDump_InnerGoFence is the exact failure from
+// parse_error_20260805_003018.291_step12.txt: a valid decision JSON whose
+// final_answer embeds a ```go code fence. Old stripFences carved out only
+// the Go body, yielding: invalid character '\\' looking for beginning of
+// object key string.
+func TestParseErrorDump_InnerGoFence(t *testing.T) {
+	// Minimal reproduction matching the dump structure (escaped \n, ```go, braces).
+	raw := `{"thought":"Evidence is sufficient","final_answer":"Go 1.26 optimizes fmt.Errorf.\n\n` +
+		"```go\\n" +
+		"func Errorf(format string, a ...any) (err error) {\\n" +
+		"    // intentionally structured so Errorf and errors.New inline\\n" +
+		"    if err = errorf(format, a...); err != nil {\\n" +
+		"        return err\\n" +
+		"    }\\n" +
+		"    return errors.New(format)\\n" +
+		"}\\n" +
+		"```\\n\\n" +
+		`Done.","references":[{"title":"Go 1.26 fmt.Errorf","path":"/tmp/x.md","layer":"code"}]}`
+
+	cleaned := CleanObject(raw)
+	var result map[string]any
+	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+		t.Fatalf("regression: CleanObject broke valid JSON with inner ```go fence: %v\nCleaned (%d bytes):\n%s",
+			err, len(cleaned), cleaned)
+	}
+	fa, _ := result["final_answer"].(string)
+	if !strings.Contains(fa, "func Errorf") {
+		t.Errorf("final_answer lost Go source:\n%s", fa)
+	}
+	if !strings.Contains(fa, "```go") {
+		t.Errorf("final_answer lost opening fence:\n%s", fa)
+	}
+	if got, _ := result["thought"].(string); got != "Evidence is sufficient" {
+		t.Errorf("thought = %q", got)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/hitzhangjie/ruminate/internal/agent/tools"
 	"github.com/hitzhangjie/ruminate/internal/config"
+	"github.com/hitzhangjie/ruminate/internal/jsonx"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
@@ -33,6 +34,41 @@ func TestParseDecision(t *testing.T) {
 	}
 	if d2.FinalAnswer != "hello" {
 		t.Fatalf("final=%q", d2.FinalAnswer)
+	}
+}
+
+func TestDumpParseError(t *testing.T) {
+	root := t.TempDir()
+	raw := "not valid json at all\n{broken"
+	cleaned := jsonx.CleanObject(raw)
+	path, err := dumpParseError(root, 3, raw, cleaned, fmt.Errorf("invalid character 'n'"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path == "" {
+		t.Fatal("expected dump path")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		"step: 3",
+		"parse_error:",
+		"===== RAW (exactly as returned by LLM) =====",
+		"not valid json at all",
+		"===== CLEANED (after jsonx.CleanObject) =====",
+		"raw_bytes:",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("dump missing %q; content:\n%s", want, s)
+		}
+	}
+	// Directory layout under wiki root.
+	wantDir := filepath.Join(root, parseErrorDumpDir)
+	if filepath.Dir(path) != wantDir {
+		t.Errorf("dump dir = %s, want %s", filepath.Dir(path), wantDir)
 	}
 }
 

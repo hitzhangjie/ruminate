@@ -143,8 +143,13 @@ func runAgent(ctx context.Context, engine *query.Engine, question string) error 
 				return
 			}
 			if s.Thought == "parse_error" {
-				fmt.Fprintf(os.Stderr, "  [step %d] parse_error (%s%s)\n",
-					s.Index, s.Duration.Round(time.Millisecond), tok)
+				if s.ParseDumpPath != "" {
+					fmt.Fprintf(os.Stderr, "  [step %d] parse_error (%s%s) → dumped to %s\n",
+						s.Index, s.Duration.Round(time.Millisecond), tok, s.ParseDumpPath)
+				} else {
+					fmt.Fprintf(os.Stderr, "  [step %d] parse_error (%s%s)\n",
+						s.Index, s.Duration.Round(time.Millisecond), tok)
+				}
 				return
 			}
 			if verbose {

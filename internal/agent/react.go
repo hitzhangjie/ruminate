@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,7 +35,7 @@ type Options struct {
 }
 
 const DefaultMaxSteps = 32
-const DefaultMaxWallTime = 120 * time.Second
+const DefaultMaxWallTime = 10 * time.Minute
 
 // defaultOptions returns Options populated with sensible defaults.
 var defaultOptions = Options{
@@ -58,6 +60,9 @@ type Step struct {
 	// PromptChars is the approximate size of the decide-request user+system payload.
 	// Useful when PromptTokens is 0 (fallback estimate: chars/3).
 	PromptChars int
+	// ParseDumpPath is set on parse_error steps: absolute path to the dumped
+	// raw LLM response for offline investigation.
+	ParseDumpPath string
 }
 
 // Result is the agent answer.
@@ -191,22 +196,37 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		dec, err := parseDecision(resp.Content)
 		if err != nil {
 			consecutiveParseErrors++
+			// Dump full raw + cleaned content for offline investigation
+			// (truncated in the model observation is not enough to diagnose
+			// prompt / format compliance issues).
+			cleaned := jsonx.CleanObject(resp.Content)
+			dumpPath, dumpErr := dumpParseError(e.wiki.Root(), step+1, resp.Content, cleaned, err)
 			// Give the model one chance by feeding the parse error as observation.
 			// But if the model repeatedly fails to produce valid JSON (e.g. context
 			// overflow on a small local model), cut our losses instead of burning
 			// all remaining steps.
 			obs := fmt.Sprintf("ERROR: could not parse decision JSON: %v\nRaw:\n%s\nRespond with valid JSON only.", err, truncate(resp.Content, 800))
+			if dumpPath != "" {
+				obs = fmt.Sprintf("ERROR: could not parse decision JSON: %v\n(full dump: %s)\nRaw:\n%s\nRespond with valid JSON only.", err, dumpPath, truncate(resp.Content, 800))
+			} else if dumpErr != nil {
+				obs = fmt.Sprintf("ERROR: could not parse decision JSON: %v\n(dump failed: %v)\nRaw:\n%s\nRespond with valid JSON only.", err, dumpErr, truncate(resp.Content, 800))
+			}
 			transcript = append(transcript, formatTurn("(parse_error)", "none", nil, obs))
 			st := Step{
 				Index: step + 1, Thought: "parse_error", Observation: obs, Duration: time.Since(start),
 				PromptTokens: pt, CompletionTokens: ct, PromptChars: promptChars,
+				ParseDumpPath: dumpPath,
 			}
 			steps = append(steps, st)
 			if opts != nil && opts.OnStep != nil {
 				opts.OnStep(st)
 			}
 			if e.tracer != nil {
-				e.tracer.End("parse_error", true, "prompt_tok", pt, "completion_tok", ct)
+				attrs := []any{"parse_error", true, "prompt_tok", pt, "completion_tok", ct}
+				if dumpPath != "" {
+					attrs = append(attrs, "dump", dumpPath)
+				}
+				e.tracer.End(attrs...)
 			}
 			if consecutiveParseErrors >= maxConsecutiveParseErrors {
 				ans := partialAnswer(transcript, "Agent stopped: LLM repeatedly failed to produce valid JSON. The model may have run out of context — try a more capable model or a narrower question.")
@@ -430,6 +450,61 @@ func parseDecision(raw string) (*decision, error) {
 		d.Args = map[string]any{}
 	}
 	return &d, nil
+}
+
+// parseErrorDumpDir is the relative path under the wiki root where failed
+// decision JSON is written for investigation.
+const parseErrorDumpDir = "db/debug/parse_errors"
+
+// dumpParseError writes the unparseable LLM response to
+// {wikiRoot}/db/debug/parse_errors/ for offline investigation.
+// Returns the absolute path of the dump file, or empty path + error.
+func dumpParseError(wikiRoot string, step int, raw, cleaned string, parseErr error) (string, error) {
+	if wikiRoot == "" {
+		return "", fmt.Errorf("empty wiki root")
+	}
+	dir := filepath.Join(wikiRoot, parseErrorDumpDir)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("mkdir dump dir: %w", err)
+	}
+
+	// Unique filename: timestamp + step + short content hash-ish length marker.
+	ts := time.Now().Format("20060102_150405.000")
+	name := fmt.Sprintf("parse_error_%s_step%02d.txt", ts, step)
+	path := filepath.Join(dir, name)
+
+	var b strings.Builder
+	b.WriteString("# Ruminate agent decision parse error dump\n")
+	b.WriteString("# For investigating intermittent parse_error / JSON non-compliance.\n")
+	fmt.Fprintf(&b, "time: %s\n", time.Now().Format(time.RFC3339Nano))
+	fmt.Fprintf(&b, "step: %d\n", step)
+	fmt.Fprintf(&b, "parse_error: %v\n", parseErr)
+	fmt.Fprintf(&b, "raw_bytes: %d\n", len(raw))
+	fmt.Fprintf(&b, "cleaned_bytes: %d\n", len(cleaned))
+	b.WriteString("\n")
+	b.WriteString("===== RAW (exactly as returned by LLM) =====\n")
+	b.WriteString(raw)
+	if !strings.HasSuffix(raw, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString("\n===== CLEANED (after jsonx.CleanObject) =====\n")
+	b.WriteString(cleaned)
+	if !strings.HasSuffix(cleaned, "\n") {
+		b.WriteByte('\n')
+	}
+	// Also show a hex dump of first bytes if content looks truncated / binary-ish.
+	if len(raw) > 0 {
+		preview := raw
+		if len(preview) > 64 {
+			preview = preview[:64]
+		}
+		fmt.Fprintf(&b, "\n===== RAW first 64 bytes (hex) =====\n% x\n", []byte(preview))
+	}
+
+	if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
+		return "", fmt.Errorf("write dump: %w", err)
+	}
+	return path, nil
 }
 
 func partialAnswer(transcript []string, note string) string {
