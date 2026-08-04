@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,14 +44,24 @@ func TestNewProvider(t *testing.T) {
 // Mock-based unit tests — no real Ollama required
 // =============================================================================
 
+// openAICompatibleChatRequest mirrors the OpenAI chat completions request format.
+type openAICompatibleChatRequest struct {
+	Model    string `json:"model"`
+	Messages []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"messages"`
+	Stream bool `json:"stream"`
+}
+
 func TestProviderChat_MockProvider(t *testing.T) {
 	t.Run("Chat", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/api/chat" {
+			if r.URL.Path != "/v1/chat/completions" {
 				t.Errorf("unexpected path: %s", r.URL.Path)
 			}
 
-			var req ollamaChatRequest
+			var req openAICompatibleChatRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("failed to decode request: %v", err)
 			}
@@ -65,21 +76,35 @@ func TestProviderChat_MockProvider(t *testing.T) {
 				t.Errorf("expected 2 messages, got %d", len(req.Messages))
 			}
 
-			resp := ollamaChatResponse{
-				Model: "gemma3:4b",
-				Message: ollamaMessage{
-					Role:    "assistant",
-					Content: "Hello, world!",
+			// OpenAI-compatible response format
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":      "chatcmpl-123",
+				"object":  "chat.completion",
+				"model":   "gemma3:4b",
+				"choices": []map[string]any{
+					{
+						"index": 0,
+						"message": map[string]string{
+							"role":    "assistant",
+							"content": "Hello, world!",
+						},
+						"finish_reason": "stop",
+					},
 				},
-				Done:            true,
-				EvalCount:       5,
-				PromptEvalCount: 10,
-			}
-			json.NewEncoder(w).Encode(resp)
+				"usage": map[string]int{
+					"prompt_tokens":     10,
+					"completion_tokens": 5,
+					"total_tokens":      15,
+				},
+			})
 		}))
 		defer server.Close()
 
-		p := NewOllamaProvider(server.URL, "gemma3:4b")
+		p, err := NewOllamaProvider(server.URL, "gemma3:4b")
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
 		resp, err := p.Chat(context.Background(), []Message{
 			{Role: "system", Content: "You are helpful."},
 			{Role: "user", Content: "Hi!"},
@@ -106,7 +131,7 @@ func TestProviderChat_MockProvider(t *testing.T) {
 				t.Fatal("expected ResponseWriter to be a Flusher")
 			}
 
-			var req ollamaChatRequest
+			var req openAICompatibleChatRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("failed to decode request: %v", err)
 			}
@@ -114,19 +139,25 @@ func TestProviderChat_MockProvider(t *testing.T) {
 				t.Error("expected stream=true")
 			}
 
+			// SSE streaming format (OpenAI-compatible)
 			chunks := []string{
-				`{"model":"gemma3:4b","message":{"role":"assistant","content":"Hello"},"done":false}`,
-				`{"model":"gemma3:4b","message":{"role":"assistant","content":" world"},"done":false}`,
-				`{"model":"gemma3:4b","message":{"role":"assistant","content":""},"done":true}`,
+				`{"id":"chatcmpl-123","object":"chat.completion.chunk","model":"gemma3:4b","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-123","object":"chat.completion.chunk","model":"gemma3:4b","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-123","object":"chat.completion.chunk","model":"gemma3:4b","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}`,
 			}
 			for _, chunk := range chunks {
-				w.Write([]byte(chunk + "\n"))
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
 				flusher.Flush()
 			}
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			flusher.Flush()
 		}))
 		defer server.Close()
 
-		p := NewOllamaProvider(server.URL, "gemma3:4b")
+		p, err := NewOllamaProvider(server.URL, "gemma3:4b")
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
 		ch, err := p.ChatStream(context.Background(), []Message{
 			{Role: "user", Content: "Say hello"},
 		}, nil)
@@ -151,12 +182,15 @@ func TestProviderChat_MockProvider(t *testing.T) {
 	t.Run("Chat_ErrorStatus", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("internal error"))
+			w.Write([]byte(`{"error":{"message":"internal error","type":"server_error"}}`))
 		}))
 		defer server.Close()
 
-		p := NewOllamaProvider(server.URL, "gemma3:4b")
-		_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "Hi"}}, nil)
+		p, err := NewOllamaProvider(server.URL, "gemma3:4b")
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
+		_, err = p.Chat(context.Background(), []Message{{Role: "user", Content: "Hi"}}, nil)
 		if err == nil {
 			t.Fatal("expected error for 500 status")
 		}
@@ -164,22 +198,37 @@ func TestProviderChat_MockProvider(t *testing.T) {
 
 	t.Run("Chat_ModelOverride", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var req ollamaChatRequest
+			var req openAICompatibleChatRequest
 			json.NewDecoder(r.Body).Decode(&req)
 			if req.Model != "custom-model" {
 				t.Errorf("expected model 'custom-model', got %s", req.Model)
 			}
-			resp := ollamaChatResponse{
-				Model:   "custom-model",
-				Message: ollamaMessage{Role: "assistant", Content: "ok"},
-				Done:    true,
-			}
-			json.NewEncoder(w).Encode(resp)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":     "chatcmpl-123",
+				"object": "chat.completion",
+				"model":  "custom-model",
+				"choices": []map[string]any{
+					{
+						"index":         0,
+						"message":       map[string]string{"role": "assistant", "content": "ok"},
+						"finish_reason": "stop",
+					},
+				},
+				"usage": map[string]int{
+					"prompt_tokens":     1,
+					"completion_tokens": 1,
+					"total_tokens":      2,
+				},
+			})
 		}))
 		defer server.Close()
 
-		p := NewOllamaProvider(server.URL, "gemma3:4b")
-		_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "Hi"}}, &ChatOptions{Model: "custom-model"})
+		p, err := NewOllamaProvider(server.URL, "gemma3:4b")
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
+		_, err = p.Chat(context.Background(), []Message{{Role: "user", Content: "Hi"}}, &ChatOptions{Model: "custom-model"})
 		if err != nil {
 			t.Fatalf("Chat failed: %v", err)
 		}
@@ -197,7 +246,10 @@ func TestProviderChat_Ollama(t *testing.T) {
 	model := ollamaTestModel()
 
 	t.Run("Chat", func(t *testing.T) {
-		p := NewOllamaProvider(baseURL, model)
+		p, err := NewOllamaProvider(baseURL, model)
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
 		resp, err := p.Chat(context.Background(), []Message{
 			{Role: "system", Content: "You are a helpful assistant. Always reply with exactly one sentence."},
 			{Role: "user", Content: "What is the capital of France?"},
@@ -221,7 +273,10 @@ func TestProviderChat_Ollama(t *testing.T) {
 	})
 
 	t.Run("ChatStream", func(t *testing.T) {
-		p := NewOllamaProvider(baseURL, model)
+		p, err := NewOllamaProvider(baseURL, model)
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
 		ch, err := p.ChatStream(context.Background(), []Message{
 			{Role: "system", Content: "You are a helpful assistant. Keep responses short."},
 			{Role: "user", Content: "Say hello in exactly 3 words."},
@@ -252,7 +307,10 @@ func TestProviderChat_Ollama(t *testing.T) {
 	})
 
 	t.Run("Chat_WithContext", func(t *testing.T) {
-		p := NewOllamaProvider(baseURL, model)
+		p, err := NewOllamaProvider(baseURL, model)
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

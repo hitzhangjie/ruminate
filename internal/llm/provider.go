@@ -61,7 +61,7 @@ type LLMProvider interface {
 func NewProvider(provider, baseURL, model, apiKey string) (LLMProvider, error) {
 	switch provider {
 	case "ollama":
-		return NewOllamaProvider(baseURL, model), nil
+		return NewOllamaProvider(baseURL, model)
 	case "openai":
 		return NewOpenAICompatibleProvider(baseURL, model, apiKey)
 	case "deepseek":
