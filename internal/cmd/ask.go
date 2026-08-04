@@ -152,16 +152,25 @@ func runAgent(ctx context.Context, engine *query.Engine, question string) error 
 				}
 				return
 			}
+			fail := ""
+			if strings.HasPrefix(s.Observation, "ERROR:") {
+				// Surface tool failures so unknown-tool thrashing is obvious.
+				msg := strings.TrimSpace(strings.TrimPrefix(s.Observation, "ERROR:"))
+				if len(msg) > 120 {
+					msg = msg[:120] + "…"
+				}
+				fail = " FAILED: " + msg
+			}
 			if verbose {
 				detail := formatActionDetail(s.Action, s.Args)
 				if detail != "" {
-					fmt.Fprintf(os.Stderr, "  [step %d] %s %s (%s%s)\n",
-						s.Index, s.Action, detail, s.Duration.Round(time.Millisecond), tok)
+					fmt.Fprintf(os.Stderr, "  [step %d] %s %s (%s%s)%s\n",
+						s.Index, s.Action, detail, s.Duration.Round(time.Millisecond), tok, fail)
 					return
 				}
 			}
-			fmt.Fprintf(os.Stderr, "  [step %d] %s (%s%s)\n",
-				s.Index, s.Action, s.Duration.Round(time.Millisecond), tok)
+			fmt.Fprintf(os.Stderr, "  [step %d] %s (%s%s)%s\n",
+				s.Index, s.Action, s.Duration.Round(time.Millisecond), tok, fail)
 		},
 	}
 

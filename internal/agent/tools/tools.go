@@ -86,12 +86,98 @@ func (r *Registry) SchemaJSON() string {
 	return string(b)
 }
 
+// toolAliases maps common LLM hallucinations / synonyms onto registered names.
+// Keys must be lowercase.
+var toolAliases = map[string]string{
+	"ls":           "list_dir",
+	"listdir":      "list_dir",
+	"list-dir":     "list_dir",
+	"list_directory": "list_dir",
+	"readdir":      "list_dir",
+	"read_file":    "file_read",
+	"readfile":     "file_read",
+	"cat":          "file_read",
+	"grep":         "file_grep",
+	"search":       "wiki_search",
+	"search_wiki":  "wiki_search",
+	"read":         "wiki_read",
+	"read_wiki":    "wiki_read",
+	"index":        "wiki_index",
+}
+
+// ResolveName maps a model-supplied tool name onto a registered name.
+//
+// Tool-capable models (e.g. gpt-oss via native tool_calls) often invent
+// namespaced names like "repo_browser.list_dir" or synonyms like "ls".
+// Resolution order: exact → last dotted/slash segment → case-insensitive
+// → alias table (on full name and on last segment).
+//
+// Returns the canonical registered name, or ("", false) if unknown.
+func (r *Registry) ResolveName(name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", false
+	}
+	if _, ok := r.tools[name]; ok {
+		return name, true
+	}
+
+	// Candidates derived from the raw name (keep order; first hit wins).
+	candidates := []string{name}
+	if base := lastPathSegment(name); base != "" && base != name {
+		candidates = append(candidates, base)
+	}
+
+	// Case-insensitive match against registered tools.
+	lowerIndex := make(map[string]string, len(r.tools))
+	for n := range r.tools {
+		lowerIndex[strings.ToLower(n)] = n
+	}
+	for _, c := range candidates {
+		if canon, ok := lowerIndex[strings.ToLower(c)]; ok {
+			return canon, true
+		}
+	}
+
+	// Alias table.
+	for _, c := range candidates {
+		if alias, ok := toolAliases[strings.ToLower(c)]; ok {
+			if _, ok := r.tools[alias]; ok {
+				return alias, true
+			}
+		}
+	}
+	return "", false
+}
+
+// lastPathSegment returns the final component of a dotted or slashed name
+// (e.g. "repo_browser.list_dir" → "list_dir", "tools/file_read" → "file_read").
+func lastPathSegment(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	// Prefer the more specific separator if both appear; take the rightmost cut.
+	iDot := strings.LastIndex(name, ".")
+	iSlash := strings.LastIndex(name, "/")
+	i := iDot
+	if iSlash > i {
+		i = iSlash
+	}
+	if i < 0 || i+1 >= len(name) {
+		return name
+	}
+	return name[i+1:]
+}
+
 // Exec looks up and runs a tool, returning a truncated observation string.
+// The name is resolved via ResolveName so namespaced/aliased calls still work.
 func (r *Registry) Exec(ctx context.Context, name string, args map[string]any, maxBytes int) (string, error) {
-	t, ok := r.tools[name]
+	resolved, ok := r.ResolveName(name)
 	if !ok {
 		return "", fmt.Errorf("unknown tool %q (available: %s)", name, strings.Join(r.Names(), ", "))
 	}
+	t := r.tools[resolved]
 	if maxBytes <= 0 {
 		maxBytes = 64 * 1024
 	}

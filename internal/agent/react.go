@@ -284,6 +284,13 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 			continue
 		}
 
+		// Models (esp. via native tool_calls) invent namespaced names like
+		// "repo_browser.list_dir". Resolve to a registered tool when possible
+		// so logs and transcript use the canonical name.
+		if resolved, ok := reg.ResolveName(dec.Action); ok {
+			dec.Action = resolved
+		}
+
 		if e.tracer != nil {
 			e.tracer.Begin("tool", "name", dec.Action, "arg", traceArgSummary(dec.Action, dec.Args))
 		}
@@ -359,6 +366,9 @@ You are an explorer, NOT a single-shot RAG pipeline. Prefer precise drill-down o
 
 Put the decision in the **message content** as a single JSON object.
 Do **not** use native function/tool_calls API fields — tools are invoked only via this JSON.
+
+**action** must be exactly one of the available tool names below (e.g. list_dir).
+Do not invent namespaced names like repo_browser.list_dir or tools.wiki_search.
 
 Either call a tool:
 {"thought":"...","action":"<tool_name>","args":{...}}
