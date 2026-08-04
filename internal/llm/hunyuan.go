@@ -1,15 +1,8 @@
 package llm
 
-import (
-	"context"
-	"fmt"
-	"strings"
+import "fmt"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/packages/param"
-	"github.com/openai/openai-go/shared"
-)
+const defaultHunyuanBaseURL = "http://api.taiji.woa.com/openapi/v2"
 
 // HunyuanProvider implements LLMProvider for Tencent Hunyuan API (OpenAI-compatible).
 //
@@ -19,13 +12,11 @@ import (
 //
 // with base URL http://api.taiji.woa.com.
 // It uses Bearer token auth and is largely OpenAI-compatible.
+//
+// HunyuanProvider wraps OpenAICompatibleProvider with Hunyuan-specific defaults.
 type HunyuanProvider struct {
-	baseURL string
-	model   string
-	client  openai.Client
+	*OpenAICompatibleProvider
 }
-
-const defaultHunyuanBaseURL = "http://api.taiji.woa.com/openapi/v2"
 
 // NewHunyuanProvider creates a new HunyuanProvider.
 //
@@ -33,146 +24,12 @@ const defaultHunyuanBaseURL = "http://api.taiji.woa.com/openapi/v2"
 // model is the model name, typically "hunyuan".
 // apiKey is the Bearer token for authentication.
 func NewHunyuanProvider(baseURL, model, apiKey string) (*HunyuanProvider, error) {
-	if apiKey == "" {
-		return nil, fmt.Errorf("hunyuan: api key is required")
-	}
-
 	if baseURL == "" {
 		baseURL = defaultHunyuanBaseURL
 	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
-	var opts []option.RequestOption
-	opts = append(opts, option.WithAPIKey(apiKey))
-	opts = append(opts, option.WithBaseURL(baseURL))
-
-	client := openai.NewClient(opts...)
-
-	return &HunyuanProvider{
-		baseURL: baseURL,
-		model:   model,
-		client:  client,
-	}, nil
-}
-
-// Chat sends a non-streaming chat request to Hunyuan API.
-func (p *HunyuanProvider) Chat(ctx context.Context, messages []Message, opts *ChatOptions) (*ChatResponse, error) {
-	oaiMessages := p.convertMessages(messages)
-
-	params := openai.ChatCompletionNewParams{
-		Model:    shared.ChatModel(p.resolveModel(opts)),
-		Messages: oaiMessages,
-	}
-
-	if opts != nil {
-		if opts.Temperature > 0 {
-			params.Temperature = param.NewOpt(opts.Temperature)
-		}
-		if opts.MaxTokens > 0 {
-			params.MaxCompletionTokens = param.NewOpt(int64(opts.MaxTokens))
-		}
-	}
-
-	resp, err := p.client.Chat.Completions.New(ctx, params)
+	inner, err := NewOpenAICompatibleProvider(baseURL, model, apiKey)
 	if err != nil {
-		return nil, fmt.Errorf("hunyuan chat: %w", err)
+		return nil, fmt.Errorf("hunyuan: %w", err)
 	}
-
-	return p.parseResponse(resp), nil
-}
-
-// ChatStream sends a streaming chat request to Hunyuan API.
-func (p *HunyuanProvider) ChatStream(ctx context.Context, messages []Message, opts *ChatOptions) (<-chan Chunk, error) {
-	oaiMessages := p.convertMessages(messages)
-
-	params := openai.ChatCompletionNewParams{
-		Model:    shared.ChatModel(p.resolveModel(opts)),
-		Messages: oaiMessages,
-	}
-
-	if opts != nil {
-		if opts.Temperature > 0 {
-			params.Temperature = param.NewOpt(opts.Temperature)
-		}
-		if opts.MaxTokens > 0 {
-			params.MaxCompletionTokens = param.NewOpt(int64(opts.MaxTokens))
-		}
-	}
-
-	// Enable usage chunk in streaming (Hunyuan returns usage in a final chunk when
-	// stream_options.include_usage is true).
-	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
-		IncludeUsage: param.NewOpt(true),
-	}
-
-	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
-
-	ch := make(chan Chunk, 10)
-	go func() {
-		defer close(ch)
-
-		for stream.Next() {
-			chunk := stream.Current()
-			for _, choice := range chunk.Choices {
-				ch <- Chunk{
-					Content: choice.Delta.Content,
-					Done:    choice.FinishReason == "stop" || choice.FinishReason == "length",
-				}
-			}
-		}
-
-		if err := stream.Err(); err != nil {
-			ch <- Chunk{Error: fmt.Errorf("hunyuan stream: %w", err)}
-		}
-	}()
-
-	return ch, nil
-}
-
-// resolveModel returns the model to use for this request.
-// Request-level model overrides the provider default.
-func (p *HunyuanProvider) resolveModel(opts *ChatOptions) string {
-	if opts != nil && opts.Model != "" {
-		return opts.Model
-	}
-	return p.model
-}
-
-// convertMessages converts internal Message format to OpenAI SDK format.
-func (p *HunyuanProvider) convertMessages(messages []Message) []openai.ChatCompletionMessageParamUnion {
-	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
-	for _, msg := range messages {
-		result = append(result, p.convertMessage(msg))
-	}
-	return result
-}
-
-// convertMessage converts a single internal Message to OpenAI SDK format.
-func (p *HunyuanProvider) convertMessage(msg Message) openai.ChatCompletionMessageParamUnion {
-	switch msg.Role {
-	case "system":
-		return openai.SystemMessage(msg.Content)
-	case "user":
-		return openai.UserMessage(msg.Content)
-	case "assistant":
-		return openai.AssistantMessage(msg.Content)
-	default:
-		return openai.UserMessage(msg.Content)
-	}
-}
-
-// parseResponse converts an OpenAI SDK ChatCompletion to our ChatResponse.
-func (p *HunyuanProvider) parseResponse(resp *openai.ChatCompletion) *ChatResponse {
-	result := &ChatResponse{
-		Usage: TokenUsage{
-			PromptTokens:     int(resp.Usage.PromptTokens),
-			CompletionTokens: int(resp.Usage.CompletionTokens),
-		},
-	}
-
-	if len(resp.Choices) > 0 {
-		result.Content = resp.Choices[0].Message.Content
-	}
-
-	return result
+	return &HunyuanProvider{OpenAICompatibleProvider: inner}, nil
 }

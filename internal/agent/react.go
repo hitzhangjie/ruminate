@@ -135,6 +135,8 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 
 	var transcript []string
 	var steps []Step
+	consecutiveParseErrors := 0
+	const maxConsecutiveParseErrors = 2
 	sys := buildSystemPrompt(reg)
 
 	for step := 0; step < maxSteps; step++ {
@@ -164,7 +166,11 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 
 		dec, err := parseDecision(resp.Content)
 		if err != nil {
-			// Give the model one chance by feeding the parse error as observation
+			consecutiveParseErrors++
+			// Give the model one chance by feeding the parse error as observation.
+			// But if the model repeatedly fails to produce valid JSON (e.g. context
+			// overflow on a small local model), cut our losses instead of burning
+			// all remaining steps.
 			obs := fmt.Sprintf("ERROR: could not parse decision JSON: %v\nRaw:\n%s\nRespond with valid JSON only.", err, truncate(resp.Content, 800))
 			transcript = append(transcript, formatTurn("(parse_error)", "none", nil, obs))
 			steps = append(steps, Step{
@@ -173,8 +179,17 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 			if e.tracer != nil {
 				e.tracer.End("parse_error", true)
 			}
+			if consecutiveParseErrors >= maxConsecutiveParseErrors {
+				ans := partialAnswer(transcript, "Agent stopped: LLM repeatedly failed to produce valid JSON. The model may have run out of context — try a more capable model or a narrower question.")
+				return &Result{
+					Answer:    ans,
+					Steps:     steps,
+					Truncated: true,
+				}, nil
+			}
 			continue
 		}
+		consecutiveParseErrors = 0
 
 		// Final answer?
 		if strings.TrimSpace(dec.FinalAnswer) != "" {

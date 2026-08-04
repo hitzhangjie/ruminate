@@ -53,12 +53,19 @@ type LLMProvider interface {
 }
 
 // NewProvider creates an LLM provider based on the config.
-// Supported providers: "ollama", "hunyuan".
-// apiKey is required for authenticated providers (hunyuan); ignored by ollama.
+// Supported providers: "ollama", "openai", "deepseek", "hunyuan".
+// "openai" is the generic OpenAI-compatible provider — use it for any service
+// with an OpenAI-compatible API by providing the appropriate baseURL.
+// "deepseek" and "hunyuan" are convenience wrappers with provider-specific defaults.
+// apiKey is required for authenticated providers (openai, deepseek, hunyuan); ignored by ollama.
 func NewProvider(provider, baseURL, model, apiKey string) (LLMProvider, error) {
 	switch provider {
 	case "ollama":
 		return NewOllamaProvider(baseURL, model), nil
+	case "openai":
+		return NewOpenAICompatibleProvider(baseURL, model, apiKey)
+	case "deepseek":
+		return NewDeepSeekProvider(baseURL, model, apiKey)
 	case "hunyuan":
 		return NewHunyuanProvider(baseURL, model, apiKey)
 	default:
