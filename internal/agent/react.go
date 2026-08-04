@@ -34,7 +34,7 @@ type Options struct {
 	OnStep func(step Step)
 }
 
-const DefaultMaxSteps = 32
+const DefaultMaxSteps = 64
 const DefaultMaxWallTime = 10 * time.Minute
 
 // defaultOptions returns Options populated with sensible defaults.
