@@ -11,6 +11,7 @@ import (
 
 	"github.com/hitzhangjie/ruminate/internal/agent/tools"
 	"github.com/hitzhangjie/ruminate/internal/config"
+	"github.com/hitzhangjie/ruminate/internal/jsonx"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/trace"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
@@ -315,24 +316,10 @@ func formatTurn(thought, action string, args map[string]any, obs string) string 
 }
 
 func parseDecision(raw string) (*decision, error) {
-	s := strings.TrimSpace(raw)
-	// Strip markdown fences if the model ignored instructions
-	if idx := strings.Index(s, "```"); idx >= 0 {
-		s = s[idx+3:]
-		if strings.HasPrefix(s, "json") {
-			s = s[4:]
-		}
-		if end := strings.Index(s, "```"); end >= 0 {
-			s = s[:end]
-		}
-		s = strings.TrimSpace(s)
-	}
-	// Extract outermost JSON object
-	if i := strings.Index(s, "{"); i >= 0 {
-		if j := strings.LastIndex(s, "}"); j > i {
-			s = s[i : j+1]
-		}
-	}
+	// Use robust JSON cleaning: strip fences, extract object with proper
+	// brace matching (string-aware, not LastIndex), sanitize real control
+	// characters inside string values (common Ollama defect).
+	s := jsonx.CleanObject(raw)
 
 	var d decision
 	dec := json.NewDecoder(strings.NewReader(s))

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/hitzhangjie/ruminate/internal/jsonx"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 )
 
@@ -174,21 +175,10 @@ Output ONLY the JSON object with no additional text.`
 // The expected format is: {"ranked_ids": [3, 1, 5, 2, 4]}
 // where the numbers are 1-based document IDs (as shown to the LLM).
 func parseRerankResponse(response string, numCandidates int) ([]int, error) {
-	cleaned := response
-
-	// Strip markdown code fences if present
-	cleaned = strings.TrimPrefix(cleaned, "```json")
-	cleaned = strings.TrimPrefix(cleaned, "```")
-	cleaned = strings.TrimSuffix(cleaned, "```")
-	cleaned = strings.TrimSpace(cleaned)
-
-	// Extract JSON object: find first '{' and last '}'
-	start := strings.Index(cleaned, "{")
-	end := strings.LastIndex(cleaned, "}")
-	if start < 0 || end < 0 || end <= start {
+	jsonStr := jsonx.CleanObject(response)
+	if jsonStr == "" {
 		return nil, fmt.Errorf("no JSON object found in response")
 	}
-	jsonStr := cleaned[start : end+1]
 
 	// Parse the JSON
 	var result struct {

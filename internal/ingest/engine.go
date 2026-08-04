@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hitzhangjie/ruminate/internal/config"
+	"github.com/hitzhangjie/ruminate/internal/jsonx"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
@@ -419,27 +420,7 @@ func mergeConceptContent(existingContent string, concept ConceptInfo, src *Sourc
 // parseAnalysisResponse extracts the JSON analysis result from an LLM response.
 // It handles models that wrap JSON in markdown code fences.
 func parseAnalysisResponse(raw string) (*AnalysisResult, error) {
-	jsonStr := raw
-
-	// Try to extract JSON from markdown code fences
-	if idx := strings.Index(raw, "```json"); idx != -1 {
-		start := idx + len("```json")
-		if end := strings.Index(raw[start:], "```"); end != -1 {
-			jsonStr = strings.TrimSpace(raw[start : start+end])
-		}
-	} else if idx := strings.Index(raw, "```"); idx != -1 {
-		start := idx + len("```")
-		if end := strings.Index(raw[start:], "```"); end != -1 {
-			jsonStr = strings.TrimSpace(raw[start : start+end])
-		}
-	}
-
-	// Also handle models that output text before/after the JSON
-	if idx := strings.Index(jsonStr, "{"); idx != -1 {
-		if end := strings.LastIndex(jsonStr, "}"); end != -1 && end > idx {
-			jsonStr = jsonStr[idx : end+1]
-		}
-	}
+	jsonStr := jsonx.CleanObject(raw)
 
 	var result AnalysisResult
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {

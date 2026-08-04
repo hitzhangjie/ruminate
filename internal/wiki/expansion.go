@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hitzhangjie/ruminate/internal/jsonx"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 )
 
@@ -163,19 +164,10 @@ Do NOT begin with phrases like "This passage answers..." or "The answer is..."
 // It handles markdown code fences and leading/trailing commentary.
 // The expected format is: ["variant1", "variant2", "variant3"]
 func parseExpansionResponse(response string) ([]string, error) {
-	cleaned := response
-	cleaned = strings.TrimPrefix(cleaned, "```json")
-	cleaned = strings.TrimPrefix(cleaned, "```")
-	cleaned = strings.TrimSuffix(cleaned, "```")
-	cleaned = strings.TrimSpace(cleaned)
-
-	// Extract JSON array: find first '[' and last ']'
-	start := strings.Index(cleaned, "[")
-	end := strings.LastIndex(cleaned, "]")
-	if start < 0 || end < 0 || end <= start {
+	jsonStr := jsonx.CleanArray(response)
+	if jsonStr == "" {
 		return nil, fmt.Errorf("no JSON array found in response")
 	}
-	jsonStr := cleaned[start : end+1]
 
 	var variants []string
 	if err := json.Unmarshal([]byte(jsonStr), &variants); err != nil {
