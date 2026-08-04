@@ -35,7 +35,7 @@ Ruminate 的核心思想不同：**AI 增量构建并持续维护一个持久化
 
 ### 前置要求
 
-- [Ollama](https://ollama.com/)（本地 LLM 推理和嵌入服务）
+- [Ollama](https://ollama.com/)（默认本地 LLM 推理和嵌入服务；也支持 DeepSeek、OpenAI 兼容接口、混元等）
 - Go 1.22+
 - Git
 
@@ -50,7 +50,7 @@ make install             # 安装到 $GOPATH/bin
 
 ```bash
 # 1. 初始化知识库
-ruminate init --wiki ./my-wiki
+ruminate init my-wiki                    # 在 ~/.ruminate/my-wiki 创建知识库
 
 # 2. 摄入资料
 ruminate ingest article.md -t article          # 本地 Markdown 文件
@@ -66,6 +66,8 @@ ruminate ask "什么是过拟合" --effort balanced   # 多角度查询扩展检
 ruminate ask "什么是过拟合" --effort thorough   # HyDE 假设文档检索
 ruminate ask "原文默认超时是多少？" --evidence auto  # L1 不足时回退 raw Evidence
 ruminate ask --agent "Reconcile 会不会阻塞？"    # ReAct 多步探索（wiki/raw/代码）
+ruminate ask --agent --agent-root ~/code "Where is Hello?"  # 指定额外代码搜索根目录
+ruminate ask --agent --max-steps 20 "..."     # 自定义最大探索步数（默认 12）
 ruminate ask "什么是 KL 散度" --save            # 好答案回写 Wiki
 
 # 5. 知识库巡检
@@ -130,7 +132,7 @@ Query
   └── 返回 top-N 结果 → LLM 综合回答 + 引用
 ```
 
-**分层回退 / Agent（规划中）**：L1 Wiki → L2 raw → L3 代码。跨层用 **ReAct**；代码默认 **rg + tree-sitter**（可只读包围函数，不上 gopls）。见 [docs/109](docs/109-agent-exploration.md)。
+**分层回退 / Agent**：L1 Wiki → L2 raw → L3 代码。`--evidence auto` 自动从 Wiki 回退到 raw Evidence；`--agent` 启用 **ReAct** 多步探索；代码默认 **rg + tree-sitter**（可只读包围函数，不上 gopls）。见 [docs/108](docs/108-dual-truth-and-layered-retrieval.md)、[docs/109](docs/109-agent-exploration.md)。
 
 ---
 
@@ -162,7 +164,7 @@ Query
 | 能力       | 说明                                                                          |
 | ---------- | ----------------------------------------------------------------------------- |
 | 全文搜索   | SQLite FTS5 + CJK bigram 分词，BM25 排序，片段高亮                            |
-| 向量检索   | Ollama embedding 语义搜索                                                     |
+| 向量检索   | Ollama / 混元 embedding 语义搜索                                                |
 | 混合检索   | FTS5 + 向量 RRF 融合，互补召回                                                |
 | 查询扩展   | `--effort balanced`：多查询变体 + RRF；`--effort thorough`：HyDE 假设文档 |
 | MMR 多样性 | 去重去聚类，保证结果多样性                                                    |
@@ -170,7 +172,7 @@ Query
 | 流式回答   | `ruminate ask` 实时流式输出                                                 |
 | 引用溯源   | 每个回答附带来源页面，可追溯验证                                              |
 | 分层召回   | `--evidence wiki\|auto\|raw`：Wiki 不足时回退 raw Evidence（双真相）        |
-| Agent 探索 | `--agent`：ReAct 多步工具调用（wiki/raw/rg/符号定位/包围函数）               |
+| Agent 探索 | `--agent`：ReAct 多步工具调用；`--agent-root` 指定代码搜索目录；`--max-steps` 控制步数 |
 | 回答回写   | `--save` 将优质回答保存为 Wiki 页面                                         |
 
 ### 巡检（Lint）
@@ -212,7 +214,8 @@ Query
 
 - **HTTP Server + REST API**：`ruminate serve` 启动 API 服务
 - **Web 前端**：Wiki 浏览、AI 对话、摄入管理、知识图谱
-- **多 Provider 支持**：DeepSeek、OpenAI 兼容接口
+- **Agent 增强**：更多代码分析工具、跨仓库探索
+- **检索增强**：Small-to-big 检索、迭代式检索
 
 ---
 
@@ -240,7 +243,7 @@ Ruminate 将这个理念从一个 "idea file" 变成了一个**可交付的软�
 | 后端         | Go                           | 开发者熟悉；强大的 CLI 和并发支持 |
 | 前端         | TypeScript + React (Vite)    | AI 友好；可读可参与               |
 | 存储         | Markdown + Git + SQLite FTS5 | Git 原生版本控制；嵌入式全文搜索  |
-| LLM Provider | Ollama（推理 + 嵌入）        | 本地优先；统一接入                |
+| LLM Provider | Ollama、DeepSeek、OpenAI 兼容、混元（推理 + 嵌入）| 本地优先；多 Provider 可切换            |
 | 向量存储     | 自研本地向量索引             | 零依赖，与 Wiki 存储同目录        |
 | CLI 框架     | Cobra                        | Go 生态标准 CLI 库                |
 
@@ -249,7 +252,7 @@ Ruminate 将这个理念从一个 "idea file" 变成了一个**可交付的软�
 1. **本地优先**：所有数据在用户磁盘上，不依赖任何云服务
 2. **Git 原生**：Wiki 就是 Markdown 文件的 Git 仓库，自带版本历史和回滚能力
 3. **Markdown 即真相**：Wiki 页面是纯 Markdown，任何编辑器（Obsidian、VS Code 等）都能阅读
-4. **Provider 抽象**：LLM 和 Embedding 接口可切换，核心逻辑不绑定特定厂商
+4. **Provider 抽象**：LLM（Ollama / DeepSeek / OpenAI 兼容 / 混元）和 Embedding（Ollama / 混元）接口可切换，核心逻辑不绑定特定厂商
 5. **CLI 优先，再 Web**：核心操作通过 CLI 完成，Web UI 通过 HTTP API 层叠其上
 6. **增量采纳**：从简单开始，按需增加功能
 
