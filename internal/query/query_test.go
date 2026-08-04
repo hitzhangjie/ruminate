@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hitzhangjie/ruminate/internal/agent"
+	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/trace"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
@@ -83,7 +85,11 @@ func (s *stubLLM) ChatStream(ctx context.Context, messages []llm.Message, opts *
 //---------------------------- the query tests ----------------------------//
 
 func newTestEngine(wm wikiManager, llm llm.LLMProvider) *Engine {
-	return &Engine{wiki: wm, llmProvider: llm}
+	var ex *agent.Explorer
+	if mgr, ok := wm.(*wiki.Manager); ok {
+		ex = agent.NewExplorer(mgr, llm, config.LLMConfig{})
+	}
+	return &Engine{wiki: wm, llmProvider: llm, explorer: ex}
 }
 
 func search(title, path, snippet string) wiki.SearchResult {
@@ -100,9 +106,9 @@ func TestBuildAskMessages(t *testing.T) {
 		"wiki/summaries/test.md": {Title: "Test", Content: "content here."},
 	}}
 	engine := newTestEngine(sw, nil)
-	sources := []Source{{Title: "Test", Path: "wiki/summaries/test.md"}}
+	refs := []wiki.Ref{{Title: "Test", Path: "wiki/summaries/test.md"}}
 
-	msgs := engine.buildAskMessages("question?", sources)
+	msgs := engine.buildAskMessages("question?", refs)
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
@@ -131,14 +137,14 @@ func TestRetrieveContext(t *testing.T) {
 		}
 		engine := newTestEngine(sw, nil)
 
-		sources, err := engine.retrieveContext(context.Background(), "q", 10, wiki.SearchEffortFast, EvidenceWiki)
+		refs, err := engine.retrieveContext(context.Background(), "q", 10, wiki.SearchEffortFast, EvidenceWiki)
 		if err != nil {
 			t.Fatalf("retrieveContext() error: %v", err)
 		}
-		if len(sources) != 2 {
-			t.Fatalf("expected 2, got %d", len(sources))
+		if len(refs) != 2 {
+			t.Fatalf("expected 2, got %d", len(refs))
 		}
-		if strings.Contains(sources[0].Snippet, "<b>") {
+		if strings.Contains(refs[0].Snippet, "<b>") {
 			t.Error("snippet should have <b> tags stripped")
 		}
 	})
@@ -155,12 +161,12 @@ func TestRetrieveContext(t *testing.T) {
 		}
 		engine := newTestEngine(sw, nil)
 
-		sources, err := engine.retrieveContext(context.Background(), "q", 10, wiki.SearchEffortFast, EvidenceWiki)
+		refs, err := engine.retrieveContext(context.Background(), "q", 10, wiki.SearchEffortFast, EvidenceWiki)
 		if err != nil {
 			t.Fatalf("retrieveContext() error: %v", err)
 		}
-		if len(sources) != 1 || sources[0].Title != "Exists" {
-			t.Errorf("got %d sources, first=%q, want 1 source 'Exists'", len(sources), sources[0].Title)
+		if len(refs) != 1 || refs[0].Title != "Exists" {
+			t.Errorf("got %d refs, first=%q, want 1 ref 'Exists'", len(refs), refs[0].Title)
 		}
 	})
 }
@@ -211,8 +217,8 @@ func TestEngine_Ask(t *testing.T) {
 		if result.Answer != "The answer." {
 			t.Errorf("Answer = %q, want 'The answer.'", result.Answer)
 		}
-		if len(result.Sources) != 1 || result.Sources[0].Title != "Test Page" {
-			t.Errorf("Sources = %+v", result.Sources)
+		if len(result.Refs) != 1 || result.Refs[0].Title != "Test Page" {
+			t.Errorf("Sources = %+v", result.Refs)
 		}
 	})
 
@@ -222,9 +228,9 @@ func TestEngine_Ask(t *testing.T) {
 			pages:   map[string]*wiki.Page{"wiki/summaries/p.md": {Title: "P", Content: "c"}},
 		}
 		engine := newTestEngine(sw, &stubLLM{response: "ok"})
-		result, err := engine.Ask(context.Background(), "q", &AskOptions{Save: true})
+		result, err := engine.Ask(context.Background(), "q", &AskOptions{})
 		if err != nil {
-			t.Fatalf("Ask() with save error: %v", err)
+			t.Fatalf("Ask() error: %v", err)
 		}
 		if result.Answer != "ok" {
 			t.Errorf("Answer = %q, want 'ok'", result.Answer)
@@ -233,27 +239,6 @@ func TestEngine_Ask(t *testing.T) {
 }
 
 //-------------------------------- others ---------------------------------//
-
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		name   string
-		s      string
-		maxLen int
-		want   string
-	}{
-		{"short", "hello", 10, "hello"},
-		{"exact", "1234567890", 10, "1234567890"},
-		{"truncate", "hello world", 8, "hello..."},
-		{"empty", "", 5, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := truncate(tt.s, tt.maxLen); got != tt.want {
-				t.Errorf("truncate(%q, %d) = %q, want %q", tt.s, tt.maxLen, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestStripTags(t *testing.T) {
 	tests := []struct {
@@ -273,11 +258,21 @@ func TestStripTags(t *testing.T) {
 }
 
 func TestSourceDocList(t *testing.T) {
-	if got := sourceDocList(nil); got != "[]" {
+	if got := refDocList(nil); got != "[]" {
 		t.Errorf("nil = %q, want []", got)
 	}
-	if got := sourceDocList([]Source{{Title: "A"}, {Title: "B"}}); got != "[A,B]" {
+	if got := refDocList([]wiki.Ref{{Title: "A"}, {Title: "B"}}); got != "[A,B]" {
 		t.Errorf("two = %q, want [A,B]", got)
 	}
 }
 
+func TestEngineAskAgent_NoExplorer(t *testing.T) {
+	// When Engine is constructed without a real wiki.Manager (e.g. with stubWiki
+	// in tests), the explorer stays nil and AskAgent returns a clear error.
+	// In production, NewEngine always passes *wiki.Manager to the explorer.
+	engine := newTestEngine(&stubWiki{}, &stubLLM{response: "unused"})
+	_, err := engine.AskAgent(context.Background(), "q", nil)
+	if err == nil || !strings.Contains(err.Error(), "real ReACT explorer") {
+		t.Errorf("expected 'real ReACT explorer' error, got: %v", err)
+	}
+}

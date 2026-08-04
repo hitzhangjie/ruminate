@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hitzhangjie/ruminate/internal/agent"
 	"github.com/hitzhangjie/ruminate/internal/config"
 	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/trace"
@@ -25,16 +26,18 @@ type wikiManager interface {
 	SetTracer(tr *trace.Tracer)
 }
 
-// Engine drives AI-powered query operations (ask).
+// Engine drives AI-powered query operations (ask and agent).
 //
 // Engine is a higher-level orchestration component built on top of wiki.Manager.
-// It owns the Manager lifecycle and coordinates the ask pipeline:
-// retrieve context → build prompt → call LLM → optionally save result.
+// It owns the Manager lifecycle and coordinates both query paths:
+//   - Ask pipeline: retrieve context → build prompt → call LLM → optionally save result.
+//   - Agent (ReAct): multi-step exploration with tools (wiki/raw/code).
 type Engine struct {
 	wiki        wikiManager
 	llmProvider llm.LLMProvider
 	llmCfg      config.LLMConfig
 	tracer      *trace.Tracer
+	explorer    *agent.Explorer
 }
 
 // NewEngine creates a new query Engine from the given runtime configuration.
@@ -59,6 +62,7 @@ func NewEngine(cfg *config.RuntimeConfig) (*Engine, error) {
 		wiki:        mgr,
 		llmProvider: llmProvider,
 		llmCfg:      cfg.LLM,
+		explorer:    agent.NewExplorer(mgr, llmProvider, cfg.LLM),
 	}, nil
 }
 
@@ -67,4 +71,24 @@ func NewEngine(cfg *config.RuntimeConfig) (*Engine, error) {
 func (e *Engine) SetTracer(tr *trace.Tracer) {
 	e.tracer = tr
 	e.wiki.SetTracer(tr)
+	e.explorer.SetTracer(tr)
+}
+
+func (e *Engine) Tracer() *trace.Tracer {
+	return e.tracer
+}
+
+// SaveAnswer saves a Q&A result as a wiki synthesis page.
+func (e *Engine) SaveAnswer(question, answer string, refs []wiki.Ref) error {
+	title, content := wiki.FormatSynthesisContent(question, answer, refs)
+
+	existing, err := e.wiki.Read(title, wiki.PageTypeSynthesis)
+	if err != nil {
+		// Not found — create a new page.
+		_, err = e.wiki.Create(title, wiki.PageTypeSynthesis, content)
+		return err
+	}
+	// Already exists — update with new answer.
+	_, err = e.wiki.Update(existing.Title, wiki.PageTypeSynthesis, content)
+	return err
 }

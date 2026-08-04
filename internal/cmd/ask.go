@@ -11,15 +11,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hitzhangjie/ruminate/internal/agent"
-	"github.com/hitzhangjie/ruminate/internal/config"
-	"github.com/hitzhangjie/ruminate/internal/llm"
 	"github.com/hitzhangjie/ruminate/internal/query"
 	"github.com/hitzhangjie/ruminate/internal/trace"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
 var (
-	askSave      bool
 	askNoStream  bool
 	askTopN      int
 	askEffort    string
@@ -33,14 +30,14 @@ var askCmd = &cobra.Command{
 	Use:   "ask <question>",
 	Short: "Ask a question and get AI-synthesized answer from wiki",
 	Long: `Search relevant wiki pages and use LLM to synthesize
-a comprehensive answer with citations.
+a comprehensive answer with references.
 
 The ask pipeline (default):
   1. Search wiki pages using hybrid/FTS retrieval (L1 Synthesis)
   2. Auto-escalate to raw Evidence when needed (L2; configurable via --evidence)
   3. Build LLM prompt with context + question
   4. Stream the synthesized answer (or --no-stream)
-  5. Answer includes citations in [[page]] notation
+  5. Answer includes references in [[page]] notation
 
 Agent mode (--agent): multi-step ReAct exploration (docs/109).
   Uses tools: wiki_*, raw_*, file_grep/read, symbol_search, read_enclosing.
@@ -50,8 +47,7 @@ Examples:
   ruminate ask "What is RAG?"
   ruminate ask --evidence auto "原文默认超时是多少？"
   ruminate ask --agent "Reconcile 会不会阻塞？"
-  ruminate ask --agent --agent-root /path/to/code "Where is Hello defined?"
-  ruminate ask --save "How does FTS5 work?"`,
+  ruminate ask --agent --agent-root /path/to/code "Where is Hello defined?"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		question := strings.Join(args, " ")
@@ -63,9 +59,10 @@ Examples:
 			return fmt.Errorf("loading config: %w", err)
 		}
 
+		// init tracer
 		verbose, _ := cmd.Flags().GetBool("verbose")
-		tr := trace.New(verbose)
-		defer tr.Flush(os.Stderr)
+		tracer := trace.New(verbose)
+		defer tracer.Flush(os.Stderr)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -78,21 +75,22 @@ Examples:
 			cancel()
 		}()
 
-		if askAgent {
-			return runAgent(ctx, cfg, question, tr)
-		}
-
-		// Create query engine (internally initializes wiki.Manager)
+		// Create query engine once — shared by ask and agent paths.
 		engine, err := query.NewEngine(cfg)
 		if err != nil {
 			return err
 		}
-		engine.SetTracer(tr)
+		engine.SetTracer(tracer)
 
+		// mode1: agent exploration mode
+		if askAgent {
+			return runAgent(ctx, engine, question)
+		}
+
+		// mode2: query/recall pipeline
 		effort := parseEffort(askEffort)
 		opts := &query.AskOptions{
 			TopN:     askTopN,
-			Save:     askSave,
 			NoStream: askNoStream,
 			Effort:   effort,
 			Evidence: query.ParseEvidenceMode(askEvidence),
@@ -106,7 +104,6 @@ Examples:
 }
 
 func init() {
-	askCmd.Flags().BoolVar(&askSave, "save", false, "Save the Q&A result as a wiki synthesis page")
 	askCmd.Flags().BoolVar(&askNoStream, "no-stream", false, "Disable streaming output (wait for full answer)")
 	askCmd.Flags().IntVarP(&askTopN, "top-n", "n", query.DefaultTopN, "Number of diverse search results to use as LLM context")
 	askCmd.Flags().StringVar(&askEffort, "effort", "fast", "Search effort level: fast (no expansion), balanced (query expansion), thorough (HyDE)")
@@ -129,37 +126,15 @@ func parseEffort(s string) wiki.SearchEffort {
 	}
 }
 
-// runAgent runs the embedded ReAct explorer.
-func runAgent(ctx context.Context, cfg *config.RuntimeConfig, question string, tr *trace.Tracer) error {
-	mgr, err := wiki.NewManagerFromConfig(cfg.WikiPath, cfg.LLM, cfg.Embedding)
-	if err != nil {
-		return err
-	}
-	defer mgr.Close()
-	if !mgr.IsInitialized() {
-		return fmt.Errorf("wiki not initialized at %s — run 'ruminate init' first", cfg.WikiPath)
-	}
-
-	provider, err := llm.NewProvider(cfg.LLM.Provider, cfg.LLM.BaseURL, cfg.LLM.Model, cfg.LLM.APIKey)
-	if err != nil {
-		return fmt.Errorf("LLM provider: %w", err)
-	}
-
-	ex := agent.NewExplorer(mgr, provider, cfg.LLM)
-	ex.SetTracer(tr)
-
-	roots := []string{mgr.WikiDir(), mgr.RawDir(), mgr.Root()}
-	roots = append(roots, askAgentRoot...)
-
+// runAgent runs the embedded ReAct explorer via the query engine.
+func runAgent(ctx context.Context, engine *query.Engine, question string) error {
 	fmt.Printf("Agent exploring: %s\n\n", question)
 
-	verbose := tr.Enabled()
-
+	verbose := engine.Tracer().Enabled()
 	opts := &agent.Options{
 		MaxSteps: askMaxSteps,
 		WallTime: 120 * time.Second,
-		Roots:    roots,
-		Save:     askSave,
+		Roots:    askAgentRoot,
 		OnStep: func(s agent.Step) {
 			if s.Final {
 				fmt.Fprintf(os.Stderr, "  [step %d] final_answer\n", s.Index)
@@ -176,30 +151,24 @@ func runAgent(ctx context.Context, cfg *config.RuntimeConfig, question string, t
 		},
 	}
 
-	result, err := ex.Run(ctx, question, opts)
+	result, err := engine.AskAgent(ctx, question, opts)
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
 
 	fmt.Println(result.Answer)
 	fmt.Println()
-
-	if len(result.Citations) > 0 {
-		fmt.Println("---")
-		fmt.Println("Citations:")
-		for _, c := range result.Citations {
-			layer := c.Layer
-			if layer == "" {
-				layer = "?"
-			}
-			fmt.Printf("  - [%s] %s (%s)\n", layer, c.Title, c.Path)
-		}
-	}
+	printRefs(result.Refs, "References:", "?")
 	if result.Truncated {
 		fmt.Println("\n(note: agent stopped due to step/time budget)")
 	}
-	if askSave {
-		fmt.Println("\nQ&A saved to wiki synthesis page.")
+
+	if promptSave() {
+		if err := engine.SaveAnswer(question, result.Answer, result.Refs); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to save: %v\n", err)
+		} else {
+			fmt.Println("Q&A saved to wiki synthesis page.")
+		}
 	}
 	return nil
 }
@@ -218,20 +187,14 @@ func runAskNonStream(ctx context.Context, engine *query.Engine, question string,
 	fmt.Println(result.Answer)
 	fmt.Println()
 
-	if len(result.Sources) > 0 {
-		fmt.Println("---")
-		fmt.Println("Sources:")
-		for _, src := range result.Sources {
-			layer := src.Layer
-			if layer == "" {
-				layer = "wiki"
-			}
-			fmt.Printf("  - [%s] %s (%s)\n", layer, src.Title, src.Path)
-		}
-	}
+	printRefs(result.Refs, "References:", "wiki")
 
-	if opts.Save {
-		fmt.Println("\nQ&A saved to wiki synthesis page.")
+	if promptSave() {
+		if err := engine.SaveAnswer(question, result.Answer, result.Refs); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to save: %v\n", err)
+		} else {
+			fmt.Println("Q&A saved to wiki synthesis page.")
+		}
 	}
 
 	return nil
@@ -246,32 +209,29 @@ func runAskStream(ctx context.Context, engine *query.Engine, question string, op
 		return fmt.Errorf("ask stream failed: %w", err)
 	}
 
-	var sources []query.Source
+	var refs []wiki.Ref
+	var fullAnswer strings.Builder
 	for chunk := range ch {
 		if chunk.Error != nil {
 			return fmt.Errorf("stream error: %w", chunk.Error)
 		}
 		if chunk.Done {
-			sources = chunk.Sources
+			refs = chunk.Refs
 			break
 		}
 		fmt.Print(chunk.Content)
+		fullAnswer.WriteString(chunk.Content)
 	}
 	fmt.Println()
 
-	if len(sources) > 0 {
-		fmt.Println("\nSources:")
-		for _, src := range sources {
-			layer := src.Layer
-			if layer == "" {
-				layer = "wiki"
-			}
-			fmt.Printf("  - [%s] %s (%s)\n", layer, src.Title, src.Path)
-		}
-	}
+	printRefs(refs, "References:", "wiki")
 
-	if opts.Save {
-		fmt.Println("\nQ&A saved to wiki synthesis page.")
+	if promptSave() {
+		if err := engine.SaveAnswer(question, fullAnswer.String(), refs); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to save: %v\n", err)
+		} else {
+			fmt.Println("Q&A saved to wiki synthesis page.")
+		}
 	}
 
 	return nil
@@ -350,4 +310,35 @@ func intArg(args map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+// printRefs prints reference blocks with a header and a default layer
+// for refs whose layer is empty.
+func printRefs(refs []wiki.Ref, header, defaultLayer string) {
+	if len(refs) == 0 {
+		return
+	}
+	fmt.Println("---")
+	fmt.Println(header)
+	for _, src := range refs {
+		layer := src.Layer
+		if layer == "" {
+			layer = defaultLayer
+		}
+		fmt.Printf("  - [%s] %s (%s)\n", layer, src.Title, src.Path)
+	}
+}
+
+// promptSave asks the user whether to save the answer as a wiki page.
+// It returns false in non-interactive (pipe) mode.
+func promptSave() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil || (fi.Mode()&os.ModeCharDevice) == 0 {
+		return false // non-interactive (pipe), skip prompt
+	}
+
+	fmt.Fprint(os.Stderr, "\nSave this answer to wiki? [y/N] ")
+	var answer string
+	fmt.Scanln(&answer)
+	return strings.EqualFold(strings.TrimSpace(answer), "y")
 }

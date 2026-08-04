@@ -12,7 +12,6 @@ import (
 // AskOptions controls AI question-answering behavior.
 type AskOptions struct {
 	TopN     int               // Number of diverse search results to use as LLM context.
-	Save     bool              // Save the Q&A result as a wiki synthesis page.
 	NoStream bool              // Disable streaming output.
 	Effort   wiki.SearchEffort // Query expansion effort level (fast/balanced/thorough).
 	// Evidence controls L1→L2 layered retrieval (wiki|auto|raw). See docs/108.
@@ -21,19 +20,8 @@ type AskOptions struct {
 
 // AskResult is the final result of an AI Q&A request.
 type AskResult struct {
-	Answer  string
-	Sources []Source
-}
-
-// Source represents a wiki page or raw evidence used as context for an answer.
-type Source struct {
-	Title   string
-	Path    string
-	Snippet string
-	// Layer is "wiki" (Synthesis) or "raw" (Evidence). Empty means wiki.
-	Layer string
-	// Content is optional preloaded full text (used for raw evidence to avoid re-read).
-	Content string
+	Answer string
+	Refs   []wiki.Ref
 }
 
 // AskChunk is a streaming fragment of an answer in progress.
@@ -41,23 +29,21 @@ type AskChunk struct {
 	Content string
 	Done    bool
 	Error   error
-	Sources []Source
+	Refs    []wiki.Ref
 }
 
 const DefaultTopN = 20
 
 // Ask sends a question to the LLM with relevant wiki pages as context and
-// returns the synthesized answer with source citations.
+// returns the synthesized answer with source references.
 func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*AskResult, error) {
 	topN := DefaultTopN
-	save := false
 	effort := wiki.SearchEffortFast
 	evidence := EvidenceAuto
 	if opts != nil {
 		if opts.TopN > 0 {
 			topN = opts.TopN
 		}
-		save = opts.Save
 		if opts.Effort != "" {
 			effort = opts.Effort
 		}
@@ -69,11 +55,10 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 	if e.tracer != nil {
 		e.tracer.Begin("ask", "provider", e.llmCfg.Provider, "model", e.llmCfg.Model,
 			"query", question, "topN", topN, "effort", string(effort), "evidence", string(evidence))
-		defer e.tracer.End("saved", save)
 	}
 
 	// 1. Search for relevant pages (L1) + optional Evidence escalation (L2)
-	sources, err := e.retrieveContext(ctx, question, topN, effort, evidence)
+	refs, err := e.retrieveContext(ctx, question, topN, effort, evidence)
 	if err != nil {
 		if e.tracer != nil {
 			e.tracer.Error(err)
@@ -81,15 +66,15 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 		return nil, fmt.Errorf("retrieving context: %w", err)
 	}
 
-	if len(sources) == 0 {
+	if len(refs) == 0 {
 		return &AskResult{
-			Answer:  "I couldn't find any relevant pages in the wiki to answer this question.",
-			Sources: nil,
+			Answer: "I couldn't find any relevant pages in the wiki to answer this question.",
+			Refs:   nil,
 		}, nil
 	}
 
 	// 2. Build prompt with context
-	messages := e.buildAskMessages(question, sources)
+	messages := e.buildAskMessages(question, refs)
 
 	if e.tracer != nil {
 		contextChars := 0
@@ -98,8 +83,8 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 		}
 		tokenEst := contextChars / 3
 		e.tracer.Begin("context")
-		e.tracer.End("sources", len(sources), "chars", contextChars, "tokens_est", tokenEst,
-			"docs", sourceDocList(sources))
+		e.tracer.End("sources", len(refs), "chars", contextChars, "tokens_est", tokenEst,
+			"docs", refDocList(refs))
 	}
 
 	// 3. Call LLM
@@ -123,35 +108,21 @@ func (e *Engine) Ask(ctx context.Context, question string, opts *AskOptions) (*A
 		e.tracer.End("answer_chars", len(resp.Content))
 	}
 
-	result := &AskResult{
-		Answer:  resp.Content,
-		Sources: sources,
-	}
-
-	// 4. Optionally save to wiki
-	if save {
-		if err := e.saveToWiki(question, result); err != nil {
-			if e.tracer != nil {
-				e.tracer.Error(err)
-			}
-			return result, fmt.Errorf("saving to wiki: %w", err)
-		}
-	}
-
-	return result, nil
+	return &AskResult{
+		Answer: resp.Content,
+		Refs:   refs,
+	}, nil
 }
 
 // AskStream is like Ask but streams the answer as it is generated.
 func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOptions) (<-chan AskChunk, error) {
 	topN := DefaultTopN
-	save := false
 	effort := wiki.SearchEffortFast
 	evidence := EvidenceAuto
 	if opts != nil {
 		if opts.TopN > 0 {
 			topN = opts.TopN
 		}
-		save = opts.Save
 		if opts.Effort != "" {
 			effort = opts.Effort
 		}
@@ -163,11 +134,10 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 	if e.tracer != nil {
 		e.tracer.Begin("ask", "provider", e.llmCfg.Provider, "model", e.llmCfg.Model,
 			"query", question, "topN", topN, "effort", string(effort), "evidence", string(evidence))
-		defer e.tracer.End("saved", save)
 	}
 
 	// 1. Search for relevant pages (L1) + optional Evidence escalation (L2)
-	sources, err := e.retrieveContext(ctx, question, topN, effort, evidence)
+	refs, err := e.retrieveContext(ctx, question, topN, effort, evidence)
 	if err != nil {
 		if e.tracer != nil {
 			e.tracer.Error(err)
@@ -175,7 +145,7 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 		return nil, fmt.Errorf("retrieving context: %w", err)
 	}
 
-	if len(sources) == 0 {
+	if len(refs) == 0 {
 		ch := make(chan AskChunk, 1)
 		ch <- AskChunk{
 			Content: "I couldn't find any relevant pages in the wiki to answer this question.\n",
@@ -186,7 +156,7 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 	}
 
 	// 2. Build prompt with context
-	messages := e.buildAskMessages(question, sources)
+	messages := e.buildAskMessages(question, refs)
 
 	if e.tracer != nil {
 		contextChars := 0
@@ -195,8 +165,8 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 		}
 		tokenEst := contextChars / 3
 		e.tracer.Begin("context")
-		e.tracer.End("sources", len(sources), "chars", contextChars, "tokens_est", tokenEst,
-			"docs", sourceDocList(sources))
+		e.tracer.End("sources", len(refs), "chars", contextChars, "tokens_est", tokenEst,
+			"docs", refDocList(refs))
 	}
 
 	// 3. Start streaming LLM call
@@ -231,22 +201,11 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 			askCh <- AskChunk{Content: chunk.Content}
 		}
 
-		if save {
-			result := &AskResult{
-				Answer:  fullAnswer.String(),
-				Sources: sources,
-			}
-			if err := e.saveToWiki(question, result); err != nil {
-				askCh <- AskChunk{Error: fmt.Errorf("saving to wiki: %w", err)}
-				return
-			}
-		}
-
 		if e.tracer != nil {
 			e.tracer.End("answer_chars", fullAnswer.Len())
 		}
 
-		askCh <- AskChunk{Done: true, Sources: sources}
+		askCh <- AskChunk{Done: true, Refs: refs}
 	}()
 
 	return askCh, nil
@@ -254,18 +213,18 @@ func (e *Engine) AskStream(ctx context.Context, question string, opts *AskOption
 
 // retrieveContext searches the wiki for pages relevant to the question,
 // auto-escalating to raw Evidence when needed (docs/108).
-func (e *Engine) retrieveContext(ctx context.Context, question string, topN int, effort wiki.SearchEffort, evidence EvidenceMode) ([]Source, error) {
+func (e *Engine) retrieveContext(ctx context.Context, question string, topN int, effort wiki.SearchEffort, evidence EvidenceMode) ([]wiki.Ref, error) {
 	results, err := e.wiki.Search(ctx, question, topN, effort)
 	if err != nil {
 		return nil, err
 	}
 
-	sources := make([]Source, 0, len(results))
+	refs := make([]wiki.Ref, 0, len(results))
 	for _, r := range results {
 		if _, err := e.wiki.ReadByPath(r.Path); err != nil {
 			continue
 		}
-		sources = append(sources, Source{
+		refs = append(refs, wiki.Ref{
 			Title:   r.Title,
 			Path:    r.Path,
 			Snippet: stripTags(r.Snippet),
@@ -273,56 +232,30 @@ func (e *Engine) retrieveContext(ctx context.Context, question string, topN int,
 		})
 	}
 
+	// Auto-escalate to raw Evidence if the question is complex or ambiguous (docs/108).
 	switch evidence {
 	case EvidenceRaw:
-		sources = e.escalateEvidence(sources, question)
+		refs = attachEvidence(e.wiki, refs, question, defaultMaxRawChars)
 	case EvidenceAuto:
-		if needsEvidenceEscalation(question, sources) {
+		if needsEvidenceEscalation(question, refs) {
 			if e.tracer != nil {
 				e.tracer.Begin("evidence_escalation", "reason", "auto")
 			}
-			sources = e.escalateEvidence(sources, question)
+			refs = attachEvidence(e.wiki, refs, question, defaultMaxRawChars)
 			if e.tracer != nil {
-				e.tracer.End("sources", len(sources))
+				e.tracer.End("sources", len(refs))
 			}
 		}
 	}
 
-	return sources, nil
-}
-
-// escalateEvidence attaches L2 raw content for hit wiki pages.
-func (e *Engine) escalateEvidence(wikiSources []Source, question string) []Source {
-	// Prefer concrete *wiki.Manager methods when available.
-	type fullReader interface {
-		ReadByPath(path string) (*wiki.Page, error)
-		SearchRaw(query string, topN int) ([]wiki.SearchResult, error)
-	}
-	if r, ok := e.wiki.(fullReader); ok {
-		return attachEvidence(r, wikiSources, question, 48*1024)
-	}
-	// Fallback: only ReadByPath via wikiManager interface
-	return attachEvidence(&readOnlyAdapter{e.wiki}, wikiSources, question, 48*1024)
-}
-
-// readOnlyAdapter adapts wikiManager to rawLayerReader without SearchRaw.
-type readOnlyAdapter struct {
-	wm wikiManager
-}
-
-func (a *readOnlyAdapter) ReadByPath(path string) (*wiki.Page, error) {
-	return a.wm.ReadByPath(path)
-}
-
-func (a *readOnlyAdapter) SearchRaw(query string, topN int) ([]wiki.SearchResult, error) {
-	return nil, nil
+	return refs, nil
 }
 
 // buildAskMessages constructs the LLM prompt with context and question.
-func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Message {
+func (e *Engine) buildAskMessages(question string, refs []wiki.Ref) []llm.Message {
 	var contextBuilder strings.Builder
 	contextBuilder.WriteString("## Relevant Context\n\n")
-	for i, src := range sources {
+	for i, src := range refs {
 		layer := src.Layer
 		if layer == "" {
 			layer = "wiki"
@@ -346,7 +279,7 @@ func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Messa
 	}
 
 	var refList strings.Builder
-	for i, src := range sources {
+	for i, src := range refs {
 		layer := src.Layer
 		if layer == "" {
 			layer = "wiki"
@@ -354,7 +287,18 @@ func (e *Engine) buildAskMessages(question string, sources []Source) []llm.Messa
 		fmt.Fprintf(&refList, "  - Source %d: [[%s]] (%s · %s)\n", i+1, src.Title, layer, src.Path)
 	}
 
-	systemPrompt := fmt.Sprintf(`You are a knowledgeable research assistant answering questions based on the user's personal knowledge base.
+	systemPrompt := buildSystemPrompt(refList.String(), contextBuilder.String())
+
+	return []llm.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: question},
+	}
+}
+
+func buildSystemPrompt(reflist, context string) string {
+	// askSystemPrompt is the system prompt template for the ask (non-agent) Q&A flow.
+	// It has two %s placeholders: (1) reference list, (2) context body.
+	const askSystemPrompt = `You are a knowledgeable research assistant answering questions based on the user's personal knowledge base.
 
 The knowledge base has two layers (dual truth):
 - **Wiki (Synthesis)**: compiled understanding — dense but may omit details (lossy distillation).
@@ -364,7 +308,7 @@ Use ONLY the provided context. If the context doesn't contain enough information
 When Evidence and Synthesis disagree, prefer Evidence for factual details and note the discrepancy.
 Label whether key claims come from Synthesis vs Evidence when it matters (API behavior, defaults, dates, numbers).
 
-## Citation Rules
+## Reference Rules
 
 When citing a source, use the page TITLE in [[double brackets]]. For example:
   - "According to [[Golang]], Go's GC uses mark-sweep."
@@ -376,43 +320,8 @@ Use the actual page title every time. For raw evidence you may also cite the pat
 ## Reference List (for your reference — cite by title, not number)
 
 %s
-%s`, refList.String(), contextBuilder.String())
-
-	return []llm.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: question},
-	}
-}
-
-// saveToWiki saves a Q&A exchange as a synthesis page.
-func (e *Engine) saveToWiki(question string, result *AskResult) error {
-	title := fmt.Sprintf("Q&A: %s", truncate(question, 60))
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("# %s\n\n", title))
-	b.WriteString(fmt.Sprintf("**Question**: %s\n\n", question))
-	b.WriteString("## Answer\n\n")
-	b.WriteString(result.Answer)
-	b.WriteString("\n\n## Sources\n\n")
-	for _, src := range result.Sources {
-		b.WriteString(fmt.Sprintf("- [[%s]] (%s)\n", src.Title, src.Path))
-	}
-
-	existing, err := e.wiki.Read(title, wiki.PageTypeSynthesis)
-	if err != nil {
-		_, err = e.wiki.Create(title, wiki.PageTypeSynthesis, b.String())
-		return err
-	}
-	_, err = e.wiki.Update(existing.Title, wiki.PageTypeSynthesis, b.String())
-	return err
-}
-
-// truncate shortens a string to maxLen characters, appending "..." if needed.
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
+%s`
+	return fmt.Sprintf(askSystemPrompt, reflist, context)
 }
 
 // stripTags removes <b> and </b> tags from a snippet for plain-text display.
@@ -422,20 +331,20 @@ func stripTags(s string) string {
 	return s
 }
 
-// sourceDocList formats source titles for trace output (compact, readable).
-func sourceDocList(sources []Source) string {
-	if len(sources) == 0 {
+// refDocList formats ref titles for trace output (compact, readable).
+func refDocList(refs []wiki.Ref) string {
+	if len(refs) == 0 {
 		return "[]"
 	}
 	var b strings.Builder
 	b.WriteString("[")
-	for i, src := range sources {
+	for i, src := range refs {
 		if i > 0 {
 			b.WriteString(",")
 		}
 		b.WriteString(src.Title)
 		if i >= 9 {
-			fmt.Fprintf(&b, ",…(%d total)", len(sources))
+			fmt.Fprintf(&b, ",…(%d total)", len(refs))
 			break
 		}
 	}

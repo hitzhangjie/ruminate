@@ -61,6 +61,7 @@ ruminate/
 6. **Provider abstraction**: LLM and embedding interfaces are abstracted so providers can be swapped (Ollama → DeepSeek → OpenAI) without changing core logic.
 7. **CLI first, then Web**: Core operations via CLI. Web UI layers on top via HTTP API.
 8. **Incremental adoption**: Start simple. Add features as proven necessary.
+9. **Make the invisible visible**: Magic numbers, implicit contracts, and hidden assumptions are maintenance hazards. Lift them into named constants, explicit interfaces, and intentional code structure. A one-line wrapper that only passes a hardcoded argument is noise, not abstraction — inline it. When a value carries intent (a budget cap, a timeout, a threshold), give it a name and make it a first-class citizen of the code.
 
 ## Development Commands
 

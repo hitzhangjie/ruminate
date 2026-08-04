@@ -96,7 +96,7 @@ loop until budget exhausted or done:
   1. LLM 输出其一：
        { "thought": "...", "action": "<tool>", "args": { ... } }
      或
-       { "final_answer": "...", "citations": [ ... ] }
+       { "final_answer": "...", "references": [ ... ] }
   2. final_answer → 结束
   3. 校验 tool 名与 args；执行 → observation（截断）
   4. 将 (thought, action, observation) 追加 transcript
@@ -117,7 +117,7 @@ loop until budget exhausted or done:
 for step := 0; step < maxSteps; step++ {
     decision, err := llm.Decide(ctx, sys, transcript, tools.Schema())
     if decision.Final != "" {
-        return decision.Final, decision.Citations, nil
+        return decision.Final, decision.Refs, nil
     }
     obs, err := tools.Exec(ctx, decision.Action, decision.Args) // 含 path sandbox
     transcript = append(transcript, Turn{Thought: decision.Thought, Action: ..., Obs: obs})
@@ -212,7 +212,7 @@ Thought: 只读该函数，不读整文件
 Action: read_enclosing(path=..., line=...)
 Obs: 函数体源码
 
-Final: wiki/raw 意图 + 代码实现片段 + citations
+Final: wiki/raw 意图 + 代码实现片段 + references
      （可注明：基于句法定位，非 gopls 类型解析）
 ```
 
@@ -247,7 +247,7 @@ Final: wiki/raw 意图 + 代码实现片段 + citations
 | max_total_context | 窗口 30–50% | 为 final 留空 |
 | wall_time | 30–120s | CLI 友好 |
 
-停止条件：足够 citations / 连续 2 步无新信息 / 用户中断 / 预算耗尽（返回已有证据 + 说明未完成）。
+停止条件：足够 references / 连续 2 步无新信息 / 用户中断 / 预算耗尽（返回已有证据 + 说明未完成）。
 
 ### 3.6 记忆与写回
 
@@ -427,7 +427,7 @@ ruminate ask --agent "Reconcile 会不会阻塞？"
   → symbol_search / file_grep
   → read_enclosing(函数体)
   → file_grep(配置默认值)
-  → Final + citations；可选 --save
+  → Final + references；可选 --save
 ```
 
 ### 场景 4：只有代码、几乎没有 wiki
@@ -461,7 +461,7 @@ ruminate ask --agent "Reconcile 会不会阻塞？"
 | 更多 grammar（py/ts/…） | 同一 tool API |
 | 轻量符号缓存 / repo outline | 加速 cold search |
 | `ruminate mcp` + skill | 对外 Knowledge |
-| `ask --json` | 结构化 citations |
+| `ask --json` | 结构化 references |
 
 ### 7.3 长期（可选）
 

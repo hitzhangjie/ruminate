@@ -160,7 +160,7 @@
 | 7.6 | **代码智能**：outline / symbol_search / **read_enclosing** | ✅ | — | P0 用 go/ast（Go）；同 tool API，tree-sitter 多语言见 7.8 |
 | 7.7 | `ask --agent` | ✅ | — | `--agent-root`、`--max-steps`；默认只读、无 gopls |
 | 7.8 | 更多 language grammars | ⬜ | — | py/ts/… 同一 tool API（tree-sitter） |
-| 7.9 | `ask --json` / 结构化 citations | ⬜ | — | |
+| 7.9 | `ask --json` / 结构化 references | ⬜ | — | |
 | 7.10 | 对外 `ruminate mcp` + skill | ⬜ | — | |
 | 7.11 | （可选）gopls / 多语言 LSP-MCP | ⬜ | — | 类型级精度；默认关 |
 | 7.12 | （可选）code_anchors + stale lint | ⬜ | — | |

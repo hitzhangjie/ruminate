@@ -42,6 +42,26 @@ type Page struct {
 	FrontMatter FrontMatter
 }
 
+// Ref is a lightweight reference to stored content, used in answers, search
+// results, and synthesis pages. Unlike ingest.Source which represents external
+// material entering the system (input boundary), Ref points to content already
+// persisted inside the wiki — it's a retrieval/output-side concept.
+//
+// Ref spans both layers of the dual-truth model (docs/108):
+//   - Layer "wiki": Synthesis pages under wiki/ (L1 retrieval)
+//   - Layer "raw":  Evidence documents under raw/, attached during L2 escalation
+//
+// A Ref holds just enough metadata (path, layer, snippet) to locate and
+// contextualize a hit without duplicating full page state. When Layer is "raw",
+// Content may carry preloaded full text for LLM context injection.
+type Ref struct {
+	Title   string // page title or file name
+	Path    string // relative path from wiki root
+	Layer   string // "wiki", "raw", or "code"; empty means wiki
+	Snippet string // highlighted search snippet (may be empty)
+	Content string // preloaded full text (may be empty, e.g. for raw evidence)
+}
+
 // Manager handles wiki page CRUD and directory structure.
 type Manager struct {
 	root    string // wiki root directory path
@@ -441,6 +461,41 @@ func (m *Manager) Delete(title string, pageType PageType) error {
 	}
 
 	return nil
+}
+
+// FormatSynthesisContent builds the markdown content for a Q&A synthesis page.
+// It returns the generated title (derived from the question) and the formatted
+// content with front matter and references section. Callers are responsible
+// for creating or updating the page via Manager.Create or Manager.Update.
+func FormatSynthesisContent(question, answer string, refs []Ref) (title, content string) {
+	title = "Q&A: " + truncateStr(question, 60)
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n", title)
+	fmt.Fprintf(&b, "**Question**: %s\n\n", question)
+	b.WriteString("## Answer\n\n")
+	b.WriteString(answer)
+
+	if len(refs) > 0 {
+		b.WriteString("\n\n## References\n\n")
+		for _, r := range refs {
+			layer := r.Layer
+			if layer == "" {
+				layer = "wiki"
+			}
+			fmt.Fprintf(&b, "- [%s] [[%s]] (%s)\n", layer, r.Title, r.Path)
+		}
+	}
+
+	content = WithSources(b.String(), title, PageTypeSynthesis, nil)
+	return
+}
+
+// truncateStr shortens s to at most maxLen characters, appending "..." if needed.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // List returns all wiki pages, optionally filtered by type.

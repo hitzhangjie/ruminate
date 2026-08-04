@@ -11,6 +11,10 @@ import (
 // EvidenceMode controls L1→L2 layered retrieval (docs/108).
 type EvidenceMode string
 
+// defaultMaxRawChars is the shared budget cap for L2 raw evidence attached
+// to a query context, keeping prompt size manageable across providers.
+const defaultMaxRawChars = 48 * 1024
+
 const (
 	// EvidenceWiki uses only Synthesis (wiki) — default, backward compatible.
 	EvidenceWiki EvidenceMode = "wiki"
@@ -40,8 +44,8 @@ var evidenceTriggerWords = []string{
 }
 
 // needsEvidenceEscalation decides whether L1 context alone is insufficient.
-func needsEvidenceEscalation(question string, sources []Source) bool {
-	if len(sources) < 2 {
+func needsEvidenceEscalation(question string, refs []wiki.Ref) bool {
+	if len(refs) < 2 {
 		return true
 	}
 	q := strings.ToLower(question)
@@ -63,13 +67,13 @@ type rawLayerReader interface {
 // them as additional context Sources (Layer=evidence).
 //
 // maxRawChars caps total raw characters injected (shared budget).
-func attachEvidence(reader rawLayerReader, wikiSources []Source, question string, maxRawChars int) []Source {
+func attachEvidence(reader rawLayerReader, wikiRefs []wiki.Ref, question string, maxRawChars int) []wiki.Ref {
 	if maxRawChars <= 0 {
-		maxRawChars = 48 * 1024
+		maxRawChars = defaultMaxRawChars
 	}
 
-	out := make([]Source, 0, len(wikiSources)+4)
-	for _, s := range wikiSources {
+	out := make([]wiki.Ref, 0, len(wikiRefs)+4)
+	for _, s := range wikiRefs {
 		s.Layer = "wiki"
 		out = append(out, s)
 	}
@@ -78,7 +82,7 @@ func attachEvidence(reader rawLayerReader, wikiSources []Source, question string
 	budget := maxRawChars
 
 	// Prefer frontmatter sources on hit wiki pages.
-	for _, s := range wikiSources {
+	for _, s := range wikiRefs {
 		page, err := reader.ReadByPath(s.Path)
 		if err != nil {
 			continue
@@ -129,7 +133,7 @@ func attachEvidence(reader rawLayerReader, wikiSources []Source, question string
 	return out
 }
 
-func loadRawSource(reader rawLayerReader, path string, budget int) (*Source, int) {
+func loadRawSource(reader rawLayerReader, path string, budget int) (*wiki.Ref, int) {
 	page, err := reader.ReadByPath(path)
 	if err != nil {
 		return nil, 0
@@ -148,7 +152,7 @@ func loadRawSource(reader rawLayerReader, path string, budget int) (*Source, int
 	if len(snippet) > 200 {
 		snippet = snippet[:200] + "…"
 	}
-	return &Source{
+	return &wiki.Ref{
 		Title:   fmt.Sprintf("[raw] %s", page.Title),
 		Path:    path,
 		Snippet: snippet,

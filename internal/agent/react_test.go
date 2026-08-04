@@ -25,7 +25,7 @@ func TestParseDecision(t *testing.T) {
 		t.Fatalf("unexpected: %+v", d)
 	}
 
-	fenced := "```json\n{\"final_answer\":\"hello\",\"citations\":[]}\n```"
+	fenced := "```json\n{\"final_answer\":\"hello\",\"references\":[]}\n```"
 	d2, err := parseDecision(fenced)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ type scriptedLLM struct {
 
 func (s *scriptedLLM) Chat(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (*llm.ChatResponse, error) {
 	if s.i >= len(s.responses) {
-		return &llm.ChatResponse{Content: `{"final_answer":"fallback","citations":[]}`}, nil
+		return &llm.ChatResponse{Content: `{"final_answer":"fallback","references":[]}`}, nil
 	}
 	r := s.responses[s.i]
 	s.i++
@@ -145,7 +145,7 @@ func TestExplorerRun(t *testing.T) {
 	_ = searchArgs
 	llmStub := &scriptedLLM{responses: []string{
 		`{"thought":"search","action":"wiki_search","args":{"query":"GC"}}`,
-		`{"thought":"done","final_answer":"Go has a concurrent GC.","citations":[{"title":"GC","path":"wiki/concepts/GC.md","layer":"wiki"}]}`,
+		`{"thought":"done","final_answer":"Go has a concurrent GC.","references":[{"title":"GC","path":"wiki/concepts/GC.md","layer":"wiki"}]}`,
 	}}
 
 	ex := NewExplorer(mgr, llmStub, config.LLMConfig{Temperature: 0.1})

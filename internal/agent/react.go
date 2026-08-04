@@ -27,10 +27,15 @@ type Options struct {
 	// Roots are filesystem roots the agent may read (wiki, raw, code).
 	// If empty, wiki root (wiki/ + raw/) is used.
 	Roots []string
-	// Save writes the final Q&A as a synthesis page when true.
-	Save bool
 	// OnStep is an optional callback after each step (for CLI progress).
 	OnStep func(step Step)
+}
+
+// DefaultOptions returns Options populated with sensible defaults.
+var DefaultOptions = Options{
+	MaxSteps:     12,
+	MaxReadBytes: tools.DefaultMaxReadBytes,
+	WallTime:     120 * time.Second,
 }
 
 // Step is one ReAct turn for tracing/UI.
@@ -47,16 +52,9 @@ type Step struct {
 // Result is the agent answer.
 type Result struct {
 	Answer    string
-	Citations []Citation
+	Refs      []wiki.Ref
 	Steps     []Step
 	Truncated bool // true if stopped due to budget
-}
-
-// Citation references evidence used in the answer.
-type Citation struct {
-	Title string `json:"title,omitempty"`
-	Path  string `json:"path,omitempty"`
-	Layer string `json:"layer,omitempty"` // wiki | raw | code
 }
 
 // decision is the structured LLM output for one step.
@@ -65,7 +63,7 @@ type decision struct {
 	Action      string         `json:"action"`
 	Args        map[string]any `json:"args"`
 	FinalAnswer string         `json:"final_answer"`
-	Citations   []Citation     `json:"citations"`
+	Refs        []wiki.Ref     `json:"references"`
 }
 
 // Explorer is the ReAct control plane.
@@ -95,30 +93,29 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 	if e.llmProvider == nil {
 		return nil, fmt.Errorf("no LLM provider configured")
 	}
-	if opts == nil {
-		opts = &Options{}
-	}
-	maxSteps := opts.MaxSteps
-	if maxSteps <= 0 {
-		maxSteps = 12
-	}
-	maxRead := opts.MaxReadBytes
-	if maxRead <= 0 {
-		maxRead = tools.DefaultMaxReadBytes
-	}
-	wall := opts.WallTime
-	if wall <= 0 {
-		wall = 120 * time.Second
+	oo := DefaultOptions
+	if opts != nil {
+		if oo.MaxSteps < opts.MaxSteps {
+			oo.MaxSteps = opts.MaxSteps
+		}
+		if oo.MaxReadBytes < opts.MaxReadBytes {
+			oo.MaxReadBytes = opts.MaxReadBytes
+		}
+		if oo.WallTime < opts.WallTime {
+			oo.WallTime = opts.WallTime
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, wall)
+	ctx, cancel := context.WithTimeout(ctx, oo.WallTime)
 	defer cancel()
 
-	roots := opts.Roots
-	if len(roots) == 0 {
-		roots = []string{e.wiki.WikiDir(), e.wiki.RawDir(), e.wiki.Root()}
-	}
-	sb, err := tools.NewSandbox(roots, maxRead)
+	// Always include wiki, raw, and root directories so the agent can
+	// read its own knowledge base. Caller-provided Roots are additional.
+	roots := append(
+		[]string{e.wiki.WikiDir(), e.wiki.RawDir(), e.wiki.Root()},
+		opts.Roots...,
+	)
+	sb, err := tools.NewSandbox(roots, oo.MaxReadBytes)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: %w", err)
 	}
@@ -129,7 +126,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 	tools.RegisterCodeTools(reg, sb)
 
 	if e.tracer != nil {
-		e.tracer.Begin("agent", "question", question, "max_steps", maxSteps, "tools", len(reg.Names()))
+		e.tracer.Begin("agent", "question", question, "max_steps", oo.MaxSteps, "tools", len(reg.Names()))
 		defer e.tracer.End()
 	}
 
@@ -139,7 +136,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 	const maxConsecutiveParseErrors = 2
 	sys := buildSystemPrompt(reg)
 
-	for step := 0; step < maxSteps; step++ {
+	for step := 0; step < oo.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			return &Result{
 				Answer:    partialAnswer(transcript, "stopped: time budget exhausted"),
@@ -204,14 +201,9 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 				e.tracer.End("final", true, "answer_chars", len(dec.FinalAnswer))
 			}
 			result := &Result{
-				Answer:    dec.FinalAnswer,
-				Citations: dec.Citations,
-				Steps:     steps,
-			}
-			if opts.Save {
-				if err := e.saveSynthesis(question, result); err != nil {
-					return result, fmt.Errorf("saving synthesis: %w", err)
-				}
+				Answer: dec.FinalAnswer,
+				Refs:   dec.Refs,
+				Steps:  steps,
 			}
 			return result, nil
 		}
@@ -229,7 +221,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		if e.tracer != nil {
 			e.tracer.Begin("tool", "name", dec.Action, "arg", traceArgSummary(dec.Action, dec.Args))
 		}
-		obs, execErr := reg.Exec(ctx, dec.Action, dec.Args, maxRead)
+		obs, execErr := reg.Exec(ctx, dec.Action, dec.Args, oo.MaxReadBytes)
 		if execErr != nil {
 			obs = fmt.Sprintf("ERROR: %v", execErr)
 		}
@@ -286,7 +278,7 @@ Either call a tool:
 {"thought":"...","action":"<tool_name>","args":{...}}
 
 Or finish:
-{"thought":"...","final_answer":"...","citations":[{"title":"...","path":"...","layer":"wiki|raw|code"}]}
+{"thought":"...","final_answer":"...","references":[{"title":"...","path":"...","layer":"wiki|raw|code"}]}
 
 ## Available tools
 %s
@@ -379,37 +371,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
-}
-
-func (e *Explorer) saveSynthesis(question string, result *Result) error {
-	title := fmt.Sprintf("Q&A: %s", truncate(question, 60))
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n", title)
-	fmt.Fprintf(&b, "**Question**: %s\n\n", question)
-	b.WriteString("## Answer\n\n")
-	b.WriteString(result.Answer)
-	b.WriteString("\n\n## Citations\n\n")
-	for _, c := range result.Citations {
-		fmt.Fprintf(&b, "- [%s] %s (%s)\n", c.Layer, c.Title, c.Path)
-	}
-	if len(result.Steps) > 0 {
-		b.WriteString("\n## Agent trace\n\n")
-		for _, s := range result.Steps {
-			if s.Final {
-				fmt.Fprintf(&b, "- step %d: final_answer\n", s.Index)
-				continue
-			}
-			fmt.Fprintf(&b, "- step %d: %s\n", s.Index, s.Action)
-		}
-	}
-	content := wiki.WithSources(b.String(), title, wiki.PageTypeSynthesis, nil)
-	existing, err := e.wiki.Read(title, wiki.PageTypeSynthesis)
-	if err != nil {
-		_, err = e.wiki.Create(title, wiki.PageTypeSynthesis, content)
-		return err
-	}
-	_, err = e.wiki.Update(existing.Title, wiki.PageTypeSynthesis, content)
-	return err
 }
 
 // traceArgSummary extracts the most informative argument from a tool call

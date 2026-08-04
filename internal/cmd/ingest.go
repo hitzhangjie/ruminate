@@ -30,7 +30,7 @@ Available types:
   article   Long-form written content (articles, blog posts, tutorials, news,
             essays). The publishing channel doesn't matter — a blog post and
             a magazine article serve the same role.
-  paper     Academic or research papers with formal methodology, citations,
+  paper     Academic or research papers with formal methodology, references,
             and structured arguments.
   note      Short, informal, or fragmentary content: quick notes, chat logs,
             voice transcriptions, temporary jottings.

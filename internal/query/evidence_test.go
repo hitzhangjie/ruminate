@@ -11,10 +11,10 @@ func TestNeedsEvidenceEscalation(t *testing.T) {
 	if !needsEvidenceEscalation("hello", nil) {
 		t.Error("empty sources should escalate")
 	}
-	if !needsEvidenceEscalation("原文怎么说", []Source{{Title: "A"}, {Title: "B"}}) {
+	if !needsEvidenceEscalation("原文怎么说", []wiki.Ref{{Title: "A"}, {Title: "B"}}) {
 		t.Error("trigger word should escalate")
 	}
-	if needsEvidenceEscalation("what is GC", []Source{{Title: "A"}, {Title: "B"}, {Title: "C"}}) {
+	if needsEvidenceEscalation("what is GC", []wiki.Ref{{Title: "A"}, {Title: "B"}, {Title: "C"}}) {
 		t.Error("enough sources, no trigger — should not escalate")
 	}
 }
@@ -62,7 +62,7 @@ func TestAttachEvidence(t *testing.T) {
 			Content: "Original text about garbage collection defaults.",
 		},
 	}}
-	wikiSrc := []Source{{Title: "GC", Path: "wiki/concepts/GC.md", Layer: "wiki"}}
+	wikiSrc := []wiki.Ref{{Title: "GC", Path: "wiki/concepts/GC.md", Layer: "wiki"}}
 	out := attachEvidence(r, wikiSrc, "defaults", 10*1024)
 	if len(out) < 2 {
 		t.Fatalf("expected wiki+raw, got %d", len(out))
