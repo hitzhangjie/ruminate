@@ -153,6 +153,8 @@ func runAgent(ctx context.Context, cfg *config.RuntimeConfig, question string, t
 
 	fmt.Printf("Agent exploring: %s\n\n", question)
 
+	verbose := tr.Enabled()
+
 	opts := &agent.Options{
 		MaxSteps: askMaxSteps,
 		WallTime: 120 * time.Second,
@@ -162,6 +164,13 @@ func runAgent(ctx context.Context, cfg *config.RuntimeConfig, question string, t
 			if s.Final {
 				fmt.Fprintf(os.Stderr, "  [step %d] final_answer\n", s.Index)
 				return
+			}
+			if verbose {
+				detail := formatActionDetail(s.Action, s.Args)
+				if detail != "" {
+					fmt.Fprintf(os.Stderr, "  [step %d] %s %s (%s)\n", s.Index, s.Action, detail, s.Duration.Round(time.Millisecond))
+					return
+				}
 			}
 			fmt.Fprintf(os.Stderr, "  [step %d] %s (%s)\n", s.Index, s.Action, s.Duration.Round(time.Millisecond))
 		},
@@ -266,4 +275,79 @@ func runAskStream(ctx context.Context, engine *query.Engine, question string, op
 	}
 
 	return nil
+}
+
+// formatActionDetail extracts key arguments from a tool call for human-readable
+// verbose output (e.g. search query, file path, grep pattern).
+func formatActionDetail(action string, args map[string]any) string {
+	switch action {
+	case "wiki_search", "raw_search":
+		q := strArg(args, "query")
+		n := intArg(args, "top_n")
+		if n > 0 {
+			return fmt.Sprintf("%q (top_n=%d)", q, n)
+		}
+		return fmt.Sprintf("%q", q)
+	case "wiki_read", "raw_read", "file_read":
+		return strArg(args, "path")
+	case "wiki_links":
+		return strArg(args, "path")
+	case "raw_list_sources":
+		if p := strArg(args, "path"); p != "" {
+			return p
+		}
+		return "all"
+	case "file_grep":
+		pattern := strArg(args, "pattern")
+		glob := strArg(args, "glob")
+		if glob != "" {
+			return fmt.Sprintf("%q (glob=%s)", pattern, glob)
+		}
+		return fmt.Sprintf("%q", pattern)
+	case "symbol_search":
+		return strArg(args, "name")
+	case "list_dir", "ast_outline":
+		return strArg(args, "path")
+	case "read_enclosing":
+		path := strArg(args, "path")
+		line := intArg(args, "line")
+		if line > 0 {
+			return fmt.Sprintf("%s:%d", path, line)
+		}
+		return path
+	default:
+		return ""
+	}
+}
+
+// strArg extracts a string value from tool args, defaulting to "".
+func strArg(args map[string]any, key string) string {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return fmt.Sprint(t)
+	}
+}
+
+// intArg extracts an int value from tool args (accepts float64 from JSON), defaulting to 0.
+func intArg(args map[string]any, key string) int {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return 0
+	}
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	default:
+		return 0
+	}
 }

@@ -227,7 +227,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		}
 
 		if e.tracer != nil {
-			e.tracer.Begin("tool", "name", dec.Action)
+			e.tracer.Begin("tool", "name", dec.Action, "arg", traceArgSummary(dec.Action, dec.Args))
 		}
 		obs, execErr := reg.Exec(ctx, dec.Action, dec.Args, maxRead)
 		if execErr != nil {
@@ -410,4 +410,65 @@ func (e *Explorer) saveSynthesis(question string, result *Result) error {
 	}
 	_, err = e.wiki.Update(existing.Title, wiki.PageTypeSynthesis, content)
 	return err
+}
+
+// traceArgSummary extracts the most informative argument from a tool call
+// for compact trace output (search query, file path, grep pattern, etc.).
+func traceArgSummary(action string, args map[string]any) string {
+	switch action {
+	case "wiki_search", "raw_search":
+		return stringFromArgs(args, "query")
+	case "wiki_read", "raw_read", "file_read", "wiki_links", "list_dir", "ast_outline":
+		return stringFromArgs(args, "path")
+	case "raw_list_sources":
+		if p := stringFromArgs(args, "path"); p != "" {
+			return p
+		}
+		return "all"
+	case "file_grep":
+		return stringFromArgs(args, "pattern")
+	case "symbol_search":
+		return stringFromArgs(args, "name")
+	case "read_enclosing":
+		path := stringFromArgs(args, "path")
+		line := intFromArgs(args, "line")
+		if line > 0 {
+			return fmt.Sprintf("%s:%d", path, line)
+		}
+		return path
+	default:
+		return ""
+	}
+}
+
+// stringFromArgs extracts a string value from tool args.
+func stringFromArgs(args map[string]any, key string) string {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return fmt.Sprint(t)
+	}
+}
+
+// intFromArgs extracts an int value from tool args (accepts float64 from JSON).
+func intFromArgs(args map[string]any, key string) int {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return 0
+	}
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	default:
+		return 0
+	}
 }
