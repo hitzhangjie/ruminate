@@ -67,7 +67,7 @@ ruminate ask "什么是过拟合" --effort thorough   # HyDE 假设文档检索
 ruminate ask "原文默认超时是多少？" --evidence auto  # L1 不足时回退 raw Evidence
 ruminate ask --agent "Reconcile 会不会阻塞？"    # ReAct 多步探索（wiki/raw/代码）
 ruminate ask --agent --agent-root ~/code "Where is Hello?"  # 指定额外代码搜索根目录
-ruminate ask --agent --max-steps 20 "..."     # 自定义最大探索步数（默认 12）
+ruminate ask --agent --max-steps 20 "..."     # 自定义最大探索步数（默认 32）
 ruminate ask "什么是 KL 散度" --save            # 好答案回写 Wiki
 
 # 5. 知识库巡检

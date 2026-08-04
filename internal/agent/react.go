@@ -32,11 +32,14 @@ type Options struct {
 	OnStep func(step Step)
 }
 
-// DefaultOptions returns Options populated with sensible defaults.
-var DefaultOptions = Options{
-	MaxSteps:     12,
+const DefaultMaxSteps = 32
+const DefaultMaxWallTime = 120 * time.Second
+
+// defaultOptions returns Options populated with sensible defaults.
+var defaultOptions = Options{
+	MaxSteps:     DefaultMaxSteps,
 	MaxReadBytes: tools.DefaultMaxReadBytes,
-	WallTime:     120 * time.Second,
+	WallTime:     DefaultMaxWallTime,
 }
 
 // Step is one ReAct turn for tracing/UI.
@@ -48,6 +51,13 @@ type Step struct {
 	Observation string
 	Duration    time.Duration
 	Final       bool
+	// PromptTokens / CompletionTokens for the LLM decide call this step.
+	// Zero when the provider omits usage (some local backends).
+	PromptTokens     int
+	CompletionTokens int
+	// PromptChars is the approximate size of the decide-request user+system payload.
+	// Useful when PromptTokens is 0 (fallback estimate: chars/3).
+	PromptChars int
 }
 
 // Result is the agent answer.
@@ -56,6 +66,12 @@ type Result struct {
 	Refs      []wiki.Ref
 	Steps     []Step
 	Truncated bool // true if stopped due to budget
+	// TotalPromptTokens / TotalCompletionTokens sum LLM usage across steps.
+	// Zero components mean the provider did not report usage for those steps.
+	TotalPromptTokens     int
+	TotalCompletionTokens int
+	// TotalPromptChars sums PromptChars across decide calls (always available).
+	TotalPromptChars int
 }
 
 // decision is the structured LLM output for one step.
@@ -94,7 +110,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 	if e.llmProvider == nil {
 		return nil, fmt.Errorf("no LLM provider configured")
 	}
-	oo := DefaultOptions
+	oo := defaultOptions
 	if opts != nil {
 		if oo.MaxSteps < opts.MaxSteps {
 			oo.MaxSteps = opts.MaxSteps
@@ -133,6 +149,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 
 	var transcript []string
 	var steps []Step
+	var totalPrompt, totalCompletion, totalPromptChars int
 	consecutiveParseErrors := 0
 	const maxConsecutiveParseErrors = 2
 	sys := buildSystemPrompt(reg)
@@ -140,15 +157,19 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 	for step := 0; step < oo.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			return &Result{
-				Answer:    partialAnswer(transcript, "stopped: time budget exhausted"),
-				Steps:     steps,
-				Truncated: true,
+				Answer:                partialAnswer(transcript, "stopped: time budget exhausted"),
+				Steps:                 steps,
+				Truncated:             true,
+				TotalPromptTokens:     totalPrompt,
+				TotalCompletionTokens: totalCompletion,
+				TotalPromptChars:      totalPromptChars,
 			}, nil
 		}
 
 		messages := buildMessages(sys, question, transcript)
+		promptChars := messagesChars(messages)
 		if e.tracer != nil {
-			e.tracer.Begin("agent_step", "step", step+1)
+			e.tracer.Begin("agent_step", "step", step+1, "prompt_chars", promptChars)
 		}
 
 		start := time.Now()
@@ -162,6 +183,11 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 			return nil, fmt.Errorf("LLM decide (step %d): %w", step+1, err)
 		}
 
+		pt, ct := resp.Usage.PromptTokens, resp.Usage.CompletionTokens
+		totalPrompt += pt
+		totalCompletion += ct
+		totalPromptChars += promptChars
+
 		dec, err := parseDecision(resp.Content)
 		if err != nil {
 			consecutiveParseErrors++
@@ -171,18 +197,26 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 			// all remaining steps.
 			obs := fmt.Sprintf("ERROR: could not parse decision JSON: %v\nRaw:\n%s\nRespond with valid JSON only.", err, truncate(resp.Content, 800))
 			transcript = append(transcript, formatTurn("(parse_error)", "none", nil, obs))
-			steps = append(steps, Step{
+			st := Step{
 				Index: step + 1, Thought: "parse_error", Observation: obs, Duration: time.Since(start),
-			})
+				PromptTokens: pt, CompletionTokens: ct, PromptChars: promptChars,
+			}
+			steps = append(steps, st)
+			if opts != nil && opts.OnStep != nil {
+				opts.OnStep(st)
+			}
 			if e.tracer != nil {
-				e.tracer.End("parse_error", true)
+				e.tracer.End("parse_error", true, "prompt_tok", pt, "completion_tok", ct)
 			}
 			if consecutiveParseErrors >= maxConsecutiveParseErrors {
 				ans := partialAnswer(transcript, "Agent stopped: LLM repeatedly failed to produce valid JSON. The model may have run out of context — try a more capable model or a narrower question.")
 				return &Result{
-					Answer:    ans,
-					Steps:     steps,
-					Truncated: true,
+					Answer:                ans,
+					Steps:                 steps,
+					Truncated:             true,
+					TotalPromptTokens:     totalPrompt,
+					TotalCompletionTokens: totalCompletion,
+					TotalPromptChars:      totalPromptChars,
 				}, nil
 			}
 			continue
@@ -193,26 +227,37 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		if strings.TrimSpace(dec.FinalAnswer) != "" {
 			st := Step{
 				Index: step + 1, Thought: dec.Thought, Final: true, Duration: time.Since(start),
+				PromptTokens: pt, CompletionTokens: ct, PromptChars: promptChars,
 			}
 			steps = append(steps, st)
-			if opts.OnStep != nil {
+			if opts != nil && opts.OnStep != nil {
 				opts.OnStep(st)
 			}
 			if e.tracer != nil {
-				e.tracer.End("final", true, "answer_chars", len(dec.FinalAnswer))
+				e.tracer.End("final", true, "answer_chars", len(dec.FinalAnswer),
+					"prompt_tok", pt, "completion_tok", ct)
 			}
-			result := &Result{
-				Answer: dec.FinalAnswer,
-				Refs:   dec.Refs,
-				Steps:  steps,
-			}
-			return result, nil
+			return &Result{
+				Answer:                dec.FinalAnswer,
+				Refs:                  dec.Refs,
+				Steps:                 steps,
+				TotalPromptTokens:     totalPrompt,
+				TotalCompletionTokens: totalCompletion,
+				TotalPromptChars:      totalPromptChars,
+			}, nil
 		}
 
 		if dec.Action == "" {
 			obs := "ERROR: no action and no final_answer. Provide one or the other."
 			transcript = append(transcript, formatTurn(dec.Thought, "", nil, obs))
-			steps = append(steps, Step{Index: step + 1, Thought: dec.Thought, Observation: obs, Duration: time.Since(start)})
+			st := Step{
+				Index: step + 1, Thought: dec.Thought, Observation: obs, Duration: time.Since(start),
+				PromptTokens: pt, CompletionTokens: ct, PromptChars: promptChars,
+			}
+			steps = append(steps, st)
+			if opts != nil && opts.OnStep != nil {
+				opts.OnStep(st)
+			}
 			if e.tracer != nil {
 				e.tracer.End("missing_action", true)
 			}
@@ -233,28 +278,35 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		turn := formatTurn(dec.Thought, dec.Action, dec.Args, obs)
 		transcript = append(transcript, turn)
 		st := Step{
-			Index:       step + 1,
-			Thought:     dec.Thought,
-			Action:      dec.Action,
-			Args:        dec.Args,
-			Observation: truncate(obs, 500),
-			Duration:    time.Since(start),
+			Index:            step + 1,
+			Thought:          dec.Thought,
+			Action:           dec.Action,
+			Args:             dec.Args,
+			Observation:      truncate(obs, 500),
+			Duration:         time.Since(start),
+			PromptTokens:     pt,
+			CompletionTokens: ct,
+			PromptChars:      promptChars,
 		}
 		steps = append(steps, st)
-		if opts.OnStep != nil {
+		if opts != nil && opts.OnStep != nil {
 			opts.OnStep(st)
 		}
 		if e.tracer != nil {
-			e.tracer.End("action", dec.Action, "obs_bytes", len(obs))
+			e.tracer.End("action", dec.Action, "obs_bytes", len(obs),
+				"prompt_tok", pt, "completion_tok", ct, "prompt_chars", promptChars)
 		}
 	}
 
 	// Budget exhausted
 	ans := partialAnswer(transcript, "Agent reached max_steps without a final_answer. Summarizing available evidence is incomplete.")
 	return &Result{
-		Answer:    ans,
-		Steps:     steps,
-		Truncated: true,
+		Answer:                ans,
+		Steps:                 steps,
+		Truncated:             true,
+		TotalPromptTokens:     totalPrompt,
+		TotalCompletionTokens: totalCompletion,
+		TotalPromptChars:      totalPromptChars,
 	}, nil
 }
 
@@ -262,16 +314,26 @@ func buildSystemPrompt(reg *tools.Registry) string {
 	return fmt.Sprintf(`You are Ruminate's exploration agent. You answer questions by gathering evidence with tools (ReAct).
 
 ## Dual truth
-- **Wiki (Synthesis)**: compiled understanding — start here (wiki_search / wiki_read).
+- **Wiki (Synthesis)**: compiled understanding — navigate the catalog, then open pages.
 - **Raw (Evidence)**: archived originals — use when wiki is thin, contradictory, or the user needs precise quotes (raw_list_sources → raw_read / raw_search).
-- **Code**: under configured roots — use file_grep, symbol_search, read_enclosing (syntactic Go via go/ast; NOT type-checked; not gopls). Prefer read_enclosing over whole-file reads.
+- **External files**: under configured agent roots — code, prose, Markdown notes, etc. list_dir first, then file_grep / file_read. Use code tools (symbol_search, read_enclosing, ast_outline) only after you confirm Go (or other) source is present.
+
+## Exploration strategy (wiki)
+You are an explorer, NOT a single-shot RAG pipeline. Prefer precise drill-down over dumping many candidates into context:
+1. **wiki_index** first (optionally with filter) — catalog of titles/paths/summaries. This is the table of contents.
+2. **wiki_read** promising pages from the index.
+3. **wiki_search** only when you need keyword/BM25 lookup (cheap FTS; no embeddings). Do not treat it as a full ask pipeline.
+4. Escalate to raw_* or external roots only when wiki is insufficient.
 
 ## Rules
-1. Prefer L1 wiki first; escalate to raw/code only when needed.
+0. When exploring a new root or directory, always list_dir first. Choose tools based on what you see.
+1. Prefer L1 wiki first; escalate to raw/external files only when needed.
 2. Default is READ-ONLY. Never invent tool observations — only use what tools return.
 3. symbol_search / tree-sitter-style results may have multiple candidates; do not pretend uniqueness.
 4. When evidence is insufficient, say so in final_answer.
 5. Cite paths and wiki titles in the answer.
+6. If a search returns no results, vary: different keywords, wiki_index filter, read promising files, drill subdirs. Do not retry the same empty search.
+7. Keep context lean: open only the pages you need; summarize mentally and answer as soon as evidence is enough.
 
 ## Response format (STRICT JSON only — no markdown fences, no prose outside JSON)
 
@@ -286,6 +348,14 @@ Or finish:
 `, reg.SchemaJSON())
 }
 
+// transcriptKeepFull is how many recent steps keep full observations in the
+// next decide prompt. Older steps are compacted to thought+action+short obs
+// so long explorations do not blow the context window.
+const transcriptKeepFull = 4
+
+// transcriptOldObsMax is the max observation chars retained for compacted steps.
+const transcriptOldObsMax = 400
+
 func buildMessages(sys, question string, transcript []string) []llm.Message {
 	var b strings.Builder
 	b.WriteString("Question: ")
@@ -293,8 +363,16 @@ func buildMessages(sys, question string, transcript []string) []llm.Message {
 	b.WriteString("\n\n")
 	if len(transcript) > 0 {
 		b.WriteString("## Transcript so far\n\n")
+		fullFrom := 0
+		if len(transcript) > transcriptKeepFull {
+			fullFrom = len(transcript) - transcriptKeepFull
+		}
 		for i, t := range transcript {
-			fmt.Fprintf(&b, "### Step %d\n%s\n\n", i+1, t)
+			body := t
+			if i < fullFrom {
+				body = compactTurn(t)
+			}
+			fmt.Fprintf(&b, "### Step %d\n%s\n\n", i+1, body)
 		}
 	}
 	b.WriteString("Decide the next action or provide final_answer as JSON.")
@@ -302,6 +380,26 @@ func buildMessages(sys, question string, transcript []string) []llm.Message {
 		{Role: "system", Content: sys},
 		{Role: "user", Content: b.String()},
 	}
+}
+
+// compactTurn keeps Thought/Action and truncates Observation for old steps.
+func compactTurn(turn string) string {
+	const marker = "Observation:\n"
+	idx := strings.Index(turn, marker)
+	if idx < 0 {
+		return truncate(turn, transcriptOldObsMax+80)
+	}
+	head := turn[:idx+len(marker)]
+	obs := turn[idx+len(marker):]
+	return head + truncate(obs, transcriptOldObsMax)
+}
+
+func messagesChars(messages []llm.Message) int {
+	n := 0
+	for _, m := range messages {
+		n += len(m.Content)
+	}
+	return n
 }
 
 func formatTurn(thought, action string, args map[string]any, obs string) string {
@@ -366,6 +464,11 @@ func traceArgSummary(action string, args map[string]any) string {
 	switch action {
 	case "wiki_search", "raw_search":
 		return stringFromArgs(args, "query")
+	case "wiki_index":
+		if f := stringFromArgs(args, "filter"); f != "" {
+			return f
+		}
+		return "all"
 	case "wiki_read", "raw_read", "file_read", "wiki_links", "list_dir", "ast_outline":
 		return stringFromArgs(args, "path")
 	case "raw_list_sources":

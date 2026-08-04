@@ -10,13 +10,72 @@ import (
 
 // WikiStore is the subset of wiki.Manager used by knowledge tools.
 type WikiStore interface {
-	Search(ctx context.Context, query string, topN int, effort wiki.SearchEffort) ([]wiki.SearchResult, error)
+	// SearchKeyword is FTS-only (no embed / expansion / MMR). Agent tools must
+	// use this rather than the hybrid ask pipeline.
+	SearchKeyword(query string, topN int) ([]wiki.SearchResult, error)
 	SearchRaw(query string, topN int) ([]wiki.SearchResult, error)
 	ReadByPath(path string) (*wiki.Page, error)
 	ListSources(sourceType string) ([]string, error)
 	Root() string
 	WikiDir() string
 	RawDir() string
+}
+
+// ---- wiki_index ----
+
+type wikiIndexTool struct {
+	store WikiStore
+}
+
+func (t *wikiIndexTool) Schema() Schema {
+	return Schema{
+		Name:        "wiki_index",
+		Description: "Read the wiki catalog (index.md): titles, paths, one-line summaries by category. Prefer this first to discover relevant pages, then wiki_read to drill down. Optional filter keeps only matching lines (case-insensitive substring).",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "Optional case-insensitive substring filter over index lines (e.g. \"fmt\", \"GC\")",
+				},
+			},
+		},
+	}
+}
+
+func (t *wikiIndexTool) Exec(ctx context.Context, args map[string]any) (string, error) {
+	page, err := t.store.ReadByPath("index.md")
+	if err != nil {
+		return "", fmt.Errorf("read index.md: %w", err)
+	}
+	content := page.Content
+	filter := strings.TrimSpace(argString(args, "filter"))
+	if filter != "" {
+		content = filterLines(content, filter)
+		if strings.TrimSpace(content) == "" {
+			return fmt.Sprintf("No index.md lines matched filter %q. Try wiki_search or a broader filter.", filter), nil
+		}
+	}
+	return content, nil
+}
+
+// filterLines keeps section headings and lines containing needle (case-insensitive).
+func filterLines(content, needle string) string {
+	lowerNeedle := strings.ToLower(needle)
+	lines := strings.Split(content, "\n")
+	var out []string
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		// Keep markdown headings so category structure survives filtering.
+		if strings.HasPrefix(trim, "#") {
+			out = append(out, line)
+			continue
+		}
+		if strings.Contains(strings.ToLower(line), lowerNeedle) {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // ---- wiki_search ----
@@ -28,11 +87,11 @@ type wikiSearchTool struct {
 func (t *wikiSearchTool) Schema() Schema {
 	return Schema{
 		Name:        "wiki_search",
-		Description: "Search the wiki (Synthesis / L1) with hybrid/FTS retrieval. Prefer this first for conceptual answers.",
+		Description: "FTS keyword search over wiki pages (BM25 + snippets only — no embedding, no query expansion). Use when you know keywords; prefer wiki_index for browsing the catalog.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"query": map[string]any{"type": "string", "description": "Search query"},
+				"query": map[string]any{"type": "string", "description": "Keyword query"},
 				"top_n": map[string]any{"type": "integer", "description": "Max results (default 8)"},
 			},
 			"required": []string{"query"},
@@ -46,12 +105,12 @@ func (t *wikiSearchTool) Exec(ctx context.Context, args map[string]any) (string,
 		return "", fmt.Errorf("query is required")
 	}
 	topN := argInt(args, "top_n", 8)
-	results, err := t.store.Search(ctx, q, topN, wiki.SearchEffortFast)
+	results, err := t.store.SearchKeyword(q, topN)
 	if err != nil {
 		return "", err
 	}
 	if len(results) == 0 {
-		return "No wiki pages matched.", nil
+		return "No wiki pages matched. Try wiki_index with a filter, different keywords, or escalate to raw_search.", nil
 	}
 	var b strings.Builder
 	for i, r := range results {
@@ -276,6 +335,7 @@ func filepathToSlash(p string) string {
 
 // RegisterKnowledgeTools registers wiki_* and raw_* tools.
 func RegisterKnowledgeTools(r *Registry, store WikiStore) {
+	r.Register(&wikiIndexTool{store: store})
 	r.Register(&wikiSearchTool{store: store})
 	r.Register(&wikiReadTool{store: store})
 	r.Register(&wikiLinksTool{store: store})

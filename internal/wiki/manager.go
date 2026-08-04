@@ -603,6 +603,18 @@ func (m *Manager) Search(ctx context.Context, query string, topN int, effort Sea
 	return m.ftsWithFallback(query, topN)
 }
 
+// SearchKeyword performs FTS-only keyword search without embedding, query
+// expansion, or MMR. Intended for agent tools: the LLM already decides what
+// to look for, so a cheap BM25 lookup + snippet is enough. The hybrid ask
+// pipeline (Search + effort) remains for single-shot RAG.
+func (m *Manager) SearchKeyword(query string, topN int) ([]SearchResult, error) {
+	m.ensureComponents()
+	if topN <= 0 {
+		topN = 8
+	}
+	return m.ftsWithFallback(query, topN)
+}
+
 // SearchRaw searches the Evidence layer (raw/) via the independent raw_fts index.
 // Results are never mixed into L1 wiki top-N ranking.
 func (m *Manager) SearchRaw(query string, topN int) ([]SearchResult, error) {

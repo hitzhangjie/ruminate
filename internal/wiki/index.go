@@ -497,7 +497,12 @@ func (im *IndexManager) SearchWithSnippets(query string, limit int) ([]SearchRes
 }
 
 // searchWithSnippets is the internal implementation that executes the FTS5 query.
+// Callers may invoke this without a prior open (e.g. Manager.ftsWithFallback /
+// SearchKeyword after a file-only tool like wiki_index); open lazily here.
 func (im *IndexManager) searchWithSnippets(query string, limit int) ([]SearchResult, error) {
+	if err := im.open(); err != nil {
+		return nil, err
+	}
 
 	// snippet(pages_fts, 3, '<b>', '</b>', '...', 32)
 	//  - 3: column index of the content column (0=path, 1=title, 2=page_type, 3=content)
@@ -851,11 +856,14 @@ func (im *IndexManager) ReadIndexMd() ([]IndexEntry, error) {
 }
 
 // Close closes the SQLite database connection.
+// After Close, a later open() will reopen the database (im.db is cleared).
 func (im *IndexManager) Close() error {
-	if im.db != nil {
-		return im.db.Close()
+	if im.db == nil {
+		return nil
 	}
-	return nil
+	err := im.db.Close()
+	im.db = nil
+	return err
 }
 
 // ReindexContent deletes the existing FTS entry for path and re-inserts it

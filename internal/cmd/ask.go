@@ -109,7 +109,7 @@ func init() {
 	askCmd.Flags().StringVar(&askEffort, "effort", "fast", "Search effort level: fast (no expansion), balanced (query expansion), thorough (HyDE)")
 	askCmd.Flags().StringVar(&askEvidence, "evidence", "auto", "Evidence layer: auto (escalate when needed), raw (always attach sources), wiki (L1 only)")
 	askCmd.Flags().BoolVar(&askAgent, "agent", false, "Use multi-step ReAct agent (wiki/raw/code tools; read-only)")
-	askCmd.Flags().IntVar(&askMaxSteps, "max-steps", 12, "Max ReAct steps when --agent is set")
+	askCmd.Flags().IntVar(&askMaxSteps, "max-steps", agent.DefaultMaxSteps, "Max ReAct steps when --agent is set")
 	askCmd.Flags().StringArrayVar(&askAgentRoot, "agent-root", nil, "Extra filesystem root the agent may read (repeatable); wiki/raw always included")
 }
 
@@ -136,18 +136,27 @@ func runAgent(ctx context.Context, engine *query.Engine, question string) error 
 		WallTime: 120 * time.Second,
 		Roots:    askAgentRoot,
 		OnStep: func(s agent.Step) {
+			tok := formatStepTokens(s)
 			if s.Final {
-				fmt.Fprintf(os.Stderr, "  [step %d] final_answer\n", s.Index)
+				fmt.Fprintf(os.Stderr, "  [step %d] final_answer (%s%s)\n",
+					s.Index, s.Duration.Round(time.Millisecond), tok)
+				return
+			}
+			if s.Thought == "parse_error" {
+				fmt.Fprintf(os.Stderr, "  [step %d] parse_error (%s%s)\n",
+					s.Index, s.Duration.Round(time.Millisecond), tok)
 				return
 			}
 			if verbose {
 				detail := formatActionDetail(s.Action, s.Args)
 				if detail != "" {
-					fmt.Fprintf(os.Stderr, "  [step %d] %s %s (%s)\n", s.Index, s.Action, detail, s.Duration.Round(time.Millisecond))
+					fmt.Fprintf(os.Stderr, "  [step %d] %s %s (%s%s)\n",
+						s.Index, s.Action, detail, s.Duration.Round(time.Millisecond), tok)
 					return
 				}
 			}
-			fmt.Fprintf(os.Stderr, "  [step %d] %s (%s)\n", s.Index, s.Action, s.Duration.Round(time.Millisecond))
+			fmt.Fprintf(os.Stderr, "  [step %d] %s (%s%s)\n",
+				s.Index, s.Action, s.Duration.Round(time.Millisecond), tok)
 		},
 	}
 
@@ -162,6 +171,7 @@ func runAgent(ctx context.Context, engine *query.Engine, question string) error 
 	if result.Truncated {
 		fmt.Println("\n(note: agent stopped due to step/time budget)")
 	}
+	printAgentUsage(result)
 
 	if promptSave() {
 		if err := engine.SaveAnswer(question, result.Answer, result.Refs); err != nil {
@@ -248,6 +258,11 @@ func formatActionDetail(action string, args map[string]any) string {
 			return fmt.Sprintf("%q (top_n=%d)", q, n)
 		}
 		return fmt.Sprintf("%q", q)
+	case "wiki_index":
+		if f := strArg(args, "filter"); f != "" {
+			return fmt.Sprintf("filter=%q", f)
+		}
+		return "all"
 	case "wiki_read", "raw_read", "file_read":
 		return strArg(args, "path")
 	case "wiki_links":
@@ -277,6 +292,38 @@ func formatActionDetail(action string, args map[string]any) string {
 		return path
 	default:
 		return ""
+	}
+}
+
+// formatStepTokens returns a ", prompt→completion tok" suffix for step logs.
+// Falls back to estimated prompt tokens from PromptChars when usage is missing.
+func formatStepTokens(s agent.Step) string {
+	if s.PromptTokens > 0 || s.CompletionTokens > 0 {
+		return fmt.Sprintf(", %d→%d tok", s.PromptTokens, s.CompletionTokens)
+	}
+	if s.PromptChars > 0 {
+		// ~3 chars/token for mixed CJK+Latin (conservative display estimate)
+		est := s.PromptChars / 3
+		return fmt.Sprintf(", ~%dk chars (~%d tok est)", s.PromptChars/1000, est)
+	}
+	return ""
+}
+
+// printAgentUsage prints cumulative LLM usage after an agent run.
+func printAgentUsage(result *agent.Result) {
+	if result == nil || len(result.Steps) == 0 {
+		return
+	}
+	if result.TotalPromptTokens > 0 || result.TotalCompletionTokens > 0 {
+		fmt.Fprintf(os.Stderr, "\nToken usage: %d prompt + %d completion = %d total across %d steps\n",
+			result.TotalPromptTokens, result.TotalCompletionTokens,
+			result.TotalPromptTokens+result.TotalCompletionTokens, len(result.Steps))
+		return
+	}
+	if result.TotalPromptChars > 0 {
+		est := result.TotalPromptChars / 3
+		fmt.Fprintf(os.Stderr, "\nContext size: %d prompt chars (~%d tok est) across %d steps (provider did not report token usage)\n",
+			result.TotalPromptChars, est, len(result.Steps))
 	}
 }
 

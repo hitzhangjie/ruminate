@@ -886,6 +886,40 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	})
 }
 
+// TestManager_SearchKeyword_OpensDB reproduces the agent path: file-only ops
+// (ReadByPath / wiki_index) never open the FTS handle, then SearchKeyword must
+// still work instead of panicking on nil *sql.DB.
+func TestManager_SearchKeyword_OpensDB(t *testing.T) {
+	dir := t.TempDir()
+	mgr := NewManager(dir, nil, nil)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer mgr.Close()
+
+	content := WithSources("# Errorf\n\nfmt.Errorf optimization notes.\n", "Errorf", PageTypeConcept, nil)
+	if _, err := mgr.Create("Errorf", PageTypeConcept, content); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Close the FTS connection so the next call must re-open lazily
+	// (same state as a Manager that only did ReadByPath so far).
+	if err := mgr.Index().Close(); err != nil {
+		t.Fatalf("Close index: %v", err)
+	}
+
+	if _, err := mgr.ReadByPath("index.md"); err != nil {
+		t.Fatalf("ReadByPath index.md: %v", err)
+	}
+
+	results, err := mgr.SearchKeyword("Errorf", 8)
+	if err != nil {
+		t.Fatalf("SearchKeyword panicked or failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one FTS hit for Errorf")
+	}
+}
+
 // =============================================================================
 // Ollama test helpers
 // =============================================================================

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,49 @@ func (s *scriptedLLM) Chat(ctx context.Context, messages []llm.Message, opts *ll
 
 func (s *scriptedLLM) ChatStream(ctx context.Context, messages []llm.Message, opts *llm.ChatOptions) (<-chan llm.Chunk, error) {
 	return nil, nil
+}
+
+func TestCompactTurn(t *testing.T) {
+	turn := "Thought: x\nAction: wiki_read {\"path\":\"a.md\"}\nObservation:\n" + strings.Repeat("Z", 2000)
+	got := compactTurn(turn)
+	if !strings.Contains(got, "Thought: x") {
+		t.Fatalf("lost thought: %s", got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Fatalf("expected truncated observation: %s", got)
+	}
+	if len(got) > len(turn) {
+		t.Fatalf("compact should shrink, got %d >= %d", len(got), len(turn))
+	}
+}
+
+func TestBuildMessagesCompactsOldSteps(t *testing.T) {
+	// More steps than transcriptKeepFull: early observations should shrink.
+	var turns []string
+	for i := 0; i < transcriptKeepFull+2; i++ {
+		turns = append(turns, fmt.Sprintf("Thought: t%d\nAction: wiki_search {\"query\":\"q\"}\nObservation:\n%s",
+			i, strings.Repeat("X", 800)))
+	}
+	msgs := buildMessages("sys", "question?", turns)
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 messages, got %d", len(msgs))
+	}
+	body := msgs[1].Content
+	// Full recent steps keep long obs; early ones are compacted.
+	if !strings.Contains(body, "### Step 1\n") {
+		t.Fatal("missing step 1")
+	}
+	// Compacted observation should not retain 800 X's fully for step 1.
+	// Count X runs: early step observation capped at transcriptOldObsMax.
+	idx1 := strings.Index(body, "### Step 1\n")
+	idx2 := strings.Index(body, "### Step 2\n")
+	if idx1 < 0 || idx2 < 0 {
+		t.Fatal("missing step headers")
+	}
+	step1 := body[idx1:idx2]
+	if strings.Count(step1, "X") > transcriptOldObsMax+50 {
+		t.Errorf("step 1 should be compacted, X count=%d", strings.Count(step1, "X"))
+	}
 }
 
 func TestExplorerRun(t *testing.T) {

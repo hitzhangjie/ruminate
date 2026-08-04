@@ -128,15 +128,19 @@ for step := 0; step < maxSteps; step++ {
 
 #### A. Knowledge（Wiki + Raw）
 
+> **Agent 工具 ≠ 单轮 ask 管线。** Agent 自己做多步决策，工具应是廉价导航原语。
+> 默认策略：`wiki_index`（目录）→ `wiki_read` 下钻；需要关键词时用 `wiki_search`（**仅 FTS/BM25**，无 embedding / 无 query expansion / 无 MMR）。
+> Hybrid Search + effort 只属于非 agent 的 `ask` 路径。
+
 | Tool | 作用 | 实现 |
 |------|------|------|
-| `wiki_search` | L1 检索 | 现有 hybrid Search |
+| `wiki_index` | 读 catalog（index.md）；可选 filter | `ReadByPath("index.md")` |
+| `wiki_search` | L1 **关键词**检索 | `SearchKeyword`（FTS only） |
 | `wiki_read` | 读 wiki 页全文 | `ReadByPath` |
 | `wiki_links` | 出入链 | WikiLink 索引 |
-| `wiki_find` | 关键词 find | 现有 find |
 | `raw_list_sources` | 页的 contributing sources | frontmatter（108） |
 | `raw_read` | 读 raw 全文 / 按 heading | `raw/` |
-| `raw_search` | L2 检索 | `raw_fts` 或 rg over raw/ |
+| `raw_search` | L2 检索 | `raw_fts`（独立 FTS，非 hybrid） |
 
 #### B. 通用文件 + 句法结构（P0 默认代码能力）
 
@@ -242,10 +246,11 @@ Final: wiki/raw 意图 + 代码实现片段 + references
 
 | 预算 | 默认建议 | 说明 |
 |------|----------|------|
-| max_steps | 8–15 | 防死循环 |
+| max_steps | 32（可 `--max-steps`） | 防死循环；agent 用步数换精度 |
 | max_read_bytes | 单次 32–64KB | 大文件强制 range |
-| max_total_context | 窗口 30–50% | 为 final 留空 |
+| transcript compaction | 最近 4 步全文，更早 obs 截断 | 防上下文膨胀导致 JSON 解析失败 |
 | wall_time | 30–120s | CLI 友好 |
+| token 可见性 | 每步 + 汇总 | `-v` 展示 prompt→completion；无 usage 时回退 chars 估计 |
 
 停止条件：足够 references / 连续 2 步无新信息 / 用户中断 / 预算耗尽（返回已有证据 + 说明未完成）。
 
