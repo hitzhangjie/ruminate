@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -159,6 +160,15 @@ func (p *OpenAICompatibleProvider) convertMessage(msg Message) openai.ChatComple
 }
 
 // parseResponse converts an OpenAI SDK ChatCompletion to our ChatResponse.
+//
+// Some models (notably gpt-oss via Ollama) return empty message.content and put
+// the actionable output in message.tool_calls — even when the request did not
+// declare a tools schema. Our agent loop expects a text decision JSON in
+// Content, so we synthesize that from the first tool call when needed.
+//
+// Reasoning-only fields (reasoning / thinking / reasoning_content) are also
+// recovered when content is empty so parse dumps are not blank and retries
+// can show the model what it produced.
 func (p *OpenAICompatibleProvider) parseResponse(resp *openai.ChatCompletion) *ChatResponse {
 	result := &ChatResponse{
 		Usage: TokenUsage{
@@ -167,9 +177,91 @@ func (p *OpenAICompatibleProvider) parseResponse(resp *openai.ChatCompletion) *C
 		},
 	}
 
-	if len(resp.Choices) > 0 {
-		result.Content = resp.Choices[0].Message.Content
+	if len(resp.Choices) == 0 {
+		return result
 	}
 
+	msg := resp.Choices[0].Message
+	content := strings.TrimSpace(msg.Content)
+
+	if content == "" && len(msg.ToolCalls) > 0 {
+		thought := reasoningFromMessage(msg)
+		content = decisionJSONFromToolCall(msg.ToolCalls[0], thought)
+	}
+
+	// Still empty: surface refusal or reasoning so callers/dumps are not blank.
+	if content == "" {
+		switch {
+		case strings.TrimSpace(msg.Refusal) != "":
+			content = strings.TrimSpace(msg.Refusal)
+		default:
+			if thought := reasoningFromMessage(msg); thought != "" {
+				content = thought
+			} else if raw := strings.TrimSpace(msg.RawJSON()); raw != "" && raw != "null" {
+				// Last resort: include the raw message object for diagnostics.
+				content = raw
+			}
+		}
+	}
+
+	result.Content = content
 	return result
+}
+
+// decisionJSONFromToolCall maps an OpenAI-style function tool call into the
+// ReAct decision JSON the agent parser expects:
+//
+//	{"thought":"...","action":"<name>","args":{...}}
+func decisionJSONFromToolCall(tc openai.ChatCompletionMessageToolCall, thought string) string {
+	name := strings.TrimSpace(tc.Function.Name)
+	argsRaw := strings.TrimSpace(tc.Function.Arguments)
+
+	args := map[string]any{}
+	if argsRaw != "" {
+		if err := json.Unmarshal([]byte(argsRaw), &args); err != nil {
+			// Keep the raw arguments string so the agent / dump can inspect it.
+			args = map[string]any{"_raw": argsRaw}
+		}
+	}
+	if thought == "" {
+		thought = "native tool_calls (content empty)"
+	}
+
+	dec := map[string]any{
+		"thought": thought,
+		"action":  name,
+		"args":    args,
+	}
+	b, err := json.Marshal(dec)
+	if err != nil {
+		// Extremely defensive: never return empty when we had a tool call.
+		return fmt.Sprintf(`{"thought":%q,"action":%q,"args":{}}`, thought, name)
+	}
+	return string(b)
+}
+
+// reasoningFromMessage extracts a reasoning/thinking string from the raw
+// assistant message JSON. OpenAI-go does not model Ollama's "reasoning" or
+// native "thinking" fields, but they are preserved in RawJSON().
+func reasoningFromMessage(msg openai.ChatCompletionMessage) string {
+	return reasoningFromRaw(msg.RawJSON())
+}
+
+func reasoningFromRaw(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return ""
+	}
+	for _, key := range []string{"reasoning", "thinking", "reasoning_content"} {
+		if v, ok := m[key].(string); ok {
+			if s := strings.TrimSpace(v); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }

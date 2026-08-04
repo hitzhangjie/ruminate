@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -231,6 +232,122 @@ func TestProviderChat_MockProvider(t *testing.T) {
 		_, err = p.Chat(context.Background(), []Message{{Role: "user", Content: "Hi"}}, &ChatOptions{Model: "custom-model"})
 		if err != nil {
 			t.Fatalf("Chat failed: %v", err)
+		}
+	})
+
+	// gpt-oss / tool-capable models often return empty content + tool_calls.
+	// Provider must synthesize ReAct decision JSON so the agent can parse it.
+	t.Run("Chat_EmptyContent_ToolCalls", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":     "chatcmpl-tc",
+				"object": "chat.completion",
+				"model":  "gpt-oss:20b",
+				"choices": []map[string]any{
+					{
+						"index": 0,
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": "",
+							"reasoning": "Need to search the wiki for fmt.Errorf optimization.",
+							"tool_calls": []map[string]any{
+								{
+									"id":   "call_1",
+									"type": "function",
+									"function": map[string]string{
+										"name":      "wiki_search",
+										"arguments": `{"query":"fmt.Errorf Go 1.26","top_n":8}`,
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+				"usage": map[string]int{
+					"prompt_tokens":     100,
+					"completion_tokens": 50,
+					"total_tokens":      150,
+				},
+			})
+		}))
+		defer server.Close()
+
+		p, err := NewOllamaProvider(server.URL, "gpt-oss:20b")
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
+		resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "Go 1.26 fmt.Errorf?"}}, nil)
+		if err != nil {
+			t.Fatalf("Chat failed: %v", err)
+		}
+		if resp.Content == "" {
+			t.Fatal("expected synthesized content from tool_calls, got empty")
+		}
+
+		var dec struct {
+			Thought string         `json:"thought"`
+			Action  string         `json:"action"`
+			Args    map[string]any `json:"args"`
+		}
+		if err := json.Unmarshal([]byte(resp.Content), &dec); err != nil {
+			t.Fatalf("synthesized content is not JSON: %v\ncontent=%s", err, resp.Content)
+		}
+		if dec.Action != "wiki_search" {
+			t.Errorf("action = %q, want wiki_search", dec.Action)
+		}
+		if dec.Args["query"] != "fmt.Errorf Go 1.26" {
+			t.Errorf("args.query = %v, want fmt.Errorf Go 1.26", dec.Args["query"])
+		}
+		if !strings.Contains(dec.Thought, "fmt.Errorf") && !strings.Contains(dec.Thought, "tool_calls") {
+			t.Errorf("thought should include reasoning or fallback, got %q", dec.Thought)
+		}
+		if resp.Usage.PromptTokens != 100 {
+			t.Errorf("prompt tokens = %d, want 100", resp.Usage.PromptTokens)
+		}
+	})
+
+	t.Run("Chat_EmptyContent_ReasoningOnly", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":     "chatcmpl-reason",
+				"object": "chat.completion",
+				"model":  "gpt-oss:20b",
+				"choices": []map[string]any{
+					{
+						"index": 0,
+						"message": map[string]any{
+							"role":      "assistant",
+							"content":   "",
+							"reasoning": "I am thinking about the answer but produced no content.",
+						},
+						"finish_reason": "stop",
+					},
+				},
+				"usage": map[string]int{
+					"prompt_tokens":     10,
+					"completion_tokens": 20,
+					"total_tokens":      30,
+				},
+			})
+		}))
+		defer server.Close()
+
+		p, err := NewOllamaProvider(server.URL, "gpt-oss:20b")
+		if err != nil {
+			t.Fatalf("NewOllamaProvider failed: %v", err)
+		}
+		resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "Hi"}}, nil)
+		if err != nil {
+			t.Fatalf("Chat failed: %v", err)
+		}
+		if resp.Content == "" {
+			t.Fatal("expected reasoning fallback content, got empty")
+		}
+		if !strings.Contains(resp.Content, "thinking about the answer") {
+			t.Errorf("content = %q, want reasoning text", resp.Content)
 		}
 	})
 }

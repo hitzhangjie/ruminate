@@ -357,6 +357,9 @@ You are an explorer, NOT a single-shot RAG pipeline. Prefer precise drill-down o
 
 ## Response format (STRICT JSON only — no markdown fences, no prose outside JSON)
 
+Put the decision in the **message content** as a single JSON object.
+Do **not** use native function/tool_calls API fields — tools are invoked only via this JSON.
+
 Either call a tool:
 {"thought":"...","action":"<tool_name>","args":{...}}
 
