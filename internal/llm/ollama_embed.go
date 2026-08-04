@@ -1,102 +1,89 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
+
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 )
 
-// OllamaEmbedder implements EmbeddingProvider for Ollama.
+// OllamaEmbedder implements EmbeddingProvider for Ollama (OpenAI-compatible).
+//
+// Ollama exposes OpenAI-compatible /v1/embeddings endpoint (see
+// https://docs.ollama.com/api/openai-compatibility), so we use the
+// openai-go SDK — the same pattern as HunyuanEmbedder.
 type OllamaEmbedder struct {
-	baseURL string
-	model   string
-	client  *http.Client
+	client openai.Client
+	model  string
 }
 
 // NewOllamaEmbedder creates a new OllamaEmbedder.
-// If baseURL is empty, defaults to http://localhost:11434.
-func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
+//
+// baseURL is the Ollama API endpoint (e.g. "http://localhost:11434").
+// If empty, defaults to http://localhost:11434.
+// model is the embedding model name (e.g. "nomic-embed-text").
+//
+// Ollama ignores the Authorization header, so we pass a dummy apiKey.
+func NewOllamaEmbedder(baseURL, model string) (*OllamaEmbedder, error) {
 	if baseURL == "" {
 		baseURL = defaultOllamaBaseURL
 	}
+	baseURL = strings.TrimSuffix(baseURL, "/")
+
+	var opts []option.RequestOption
+	opts = append(opts, option.WithAPIKey("ollama")) // Ollama ignores auth
+	opts = append(opts, option.WithBaseURL(baseURL+"/v1"))
+
 	return &OllamaEmbedder{
-		baseURL: strings.TrimSuffix(baseURL, "/"),
-		model:   model,
-		client:  &http.Client{},
-	}
+		client: openai.NewClient(opts...),
+		model:  model,
+	}, nil
 }
 
-// ollamaEmbedRequest is the JSON body for POST /api/embed.
-type ollamaEmbedRequest struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
-}
-
-// ollamaEmbedResponse is the JSON body from POST /api/embed.
-type ollamaEmbedResponse struct {
-	Model      string      `json:"model"`
-	Embeddings [][]float64 `json:"embeddings"`
-}
-
-// Embed converts a batch of texts to vectors using Ollama's embed API.
+// Embed converts a batch of texts to vectors using Ollama's embedding API.
 func (e *OllamaEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	req := ollamaEmbedRequest{
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	params := openai.EmbeddingNewParams{
 		Model: e.model,
-		Input: texts,
+		Input: openai.EmbeddingNewParamsInputUnion{
+			OfArrayOfStrings: texts,
+		},
 	}
 
-	body, err := json.Marshal(req)
+	resp, err := e.client.Embeddings.New(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling embed request: %w", err)
+		return nil, fmt.Errorf("ollama embed: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/api/embed", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating embed request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := e.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("sending embed request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ollama embed API error (status %d): %s", resp.StatusCode, string(errBody))
+	if len(resp.Data) == 0 {
+		return nil, fmt.Errorf("ollama embed: empty response data")
 	}
 
-	var embedResp ollamaEmbedResponse
-	if err := json.NewDecoder(resp.Body).Decode(&embedResp); err != nil {
-		return nil, fmt.Errorf("decoding embed response: %w", err)
-	}
-
-	// Convert [][]float64 → [][]float32
-	embeddings := make([][]float32, len(embedResp.Embeddings))
-	for i, vec := range embedResp.Embeddings {
-		embeddings[i] = make([]float32, len(vec))
-		for j, v := range vec {
-			embeddings[i][j] = float32(v)
+	// Convert: sort by index (API may reorder), convert float64 → float32.
+	vecs := make([][]float32, len(resp.Data))
+	for _, emb := range resp.Data {
+		if int(emb.Index) >= len(vecs) {
+			return nil, fmt.Errorf("ollama embed: unexpected index %d (expected < %d)", emb.Index, len(vecs))
 		}
+		vecs[emb.Index] = float64ToFloat32(emb.Embedding)
 	}
 
-	return embeddings, nil
+	return vecs, nil
 }
 
 // EmbedQuery converts a single query text to a vector.
-// For Ollama, this is the same as Embed with a single-element batch.
 func (e *OllamaEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	embeddings, err := e.Embed(ctx, []string{text})
+	vecs, err := e.Embed(ctx, []string{text})
 	if err != nil {
 		return nil, err
 	}
-	if len(embeddings) == 0 {
-		return nil, fmt.Errorf("empty embeddings response")
+	if len(vecs) == 0 {
+		return nil, fmt.Errorf("ollama embed: empty response")
 	}
-	return embeddings[0], nil
+	return vecs[0], nil
 }

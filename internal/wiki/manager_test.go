@@ -738,7 +738,10 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Create_StoresEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		embedder, err := llm.NewOllamaEmbedder(baseURL, model)
+			if err != nil {
+				t.Fatalf("NewOllamaEmbedder() error: %v", err)
+			}
 		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
@@ -781,7 +784,10 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Update_RecomputesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		embedder, err := llm.NewOllamaEmbedder(baseURL, model)
+			if err != nil {
+				t.Fatalf("NewOllamaEmbedder() error: %v", err)
+			}
 		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)
@@ -789,7 +795,7 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 		defer mgr.Close()
 
 		title := fmt.Sprintf("OllamaEmbedTest_Update_%d", time.Now().UnixNano())
-		_, err := mgr.Create(title, PageTypeConcept, "# Original Ollama Content\n\nBefore update.")
+		_, err = mgr.Create(title, PageTypeConcept, "# Original Ollama Content\n\nBefore update.")
 		if err != nil {
 			t.Fatalf("Create() error: %v", err)
 		}
@@ -827,7 +833,10 @@ func TestManager_Embedding_Ollama(t *testing.T) {
 	t.Run("Delete_RemovesEmbedding", func(t *testing.T) {
 		dir := t.TempDir()
 
-		embedder := llm.NewOllamaEmbedder(baseURL, model)
+		embedder, err := llm.NewOllamaEmbedder(baseURL, model)
+			if err != nil {
+				t.Fatalf("NewOllamaEmbedder() error: %v", err)
+			}
 		mgr := NewManager(dir, embedder, nil)
 		if err := mgr.Init(); err != nil {
 			t.Fatalf("Init() error: %v", err)

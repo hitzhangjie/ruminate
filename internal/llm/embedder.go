@@ -17,7 +17,7 @@ type EmbeddingProvider interface {
 func NewEmbeddingProvider(provider, baseURL, model, apikey string) (EmbeddingProvider, error) {
 	switch provider {
 	case "ollama":
-		return NewOllamaEmbedder(baseURL, model), nil
+		return NewOllamaEmbedder(baseURL, model)
 	case "hunyuan":
 		return NewHunyuanEmbedder(baseURL, model, apikey)
 	default:

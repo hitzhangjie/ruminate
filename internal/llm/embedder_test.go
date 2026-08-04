@@ -55,11 +55,14 @@ func TestNewEmbeddingProvider(t *testing.T) {
 func TestEmbedder_MockProvider(t *testing.T) {
 	t.Run("Embed", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/api/embed" {
+			if r.URL.Path != "/v1/embeddings" {
 				t.Errorf("unexpected path: %s", r.URL.Path)
 			}
 
-			var req ollamaEmbedRequest
+			var req struct {
+				Model string `json:"model"`
+				Input any    `json:"input"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("failed to decode request: %v", err)
 			}
@@ -67,22 +70,37 @@ func TestEmbedder_MockProvider(t *testing.T) {
 			if req.Model != "nomic-embed-text" {
 				t.Errorf("expected model nomic-embed-text, got %s", req.Model)
 			}
-			if len(req.Input) != 2 {
-				t.Errorf("expected 2 inputs, got %d", len(req.Input))
+
+			// Determine number of inputs.
+			numInputs := 1
+			switch v := req.Input.(type) {
+			case []any:
+				numInputs = len(v)
 			}
 
-			resp := ollamaEmbedResponse{
-				Model: "nomic-embed-text",
-				Embeddings: [][]float64{
-					{0.1, 0.2, 0.3},
-					{0.4, 0.5, 0.6},
-				},
+			// OpenAI-compatible response format.
+			data := make([]mockEmbeddingData, numInputs)
+			for i := 0; i < numInputs; i++ {
+				data[i] = mockEmbeddingData{
+					Object:    "embedding",
+					Embedding: []float64{0.1, 0.2, 0.3},
+					Index:     i,
+				}
 			}
-			json.NewEncoder(w).Encode(resp)
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(mockEmbeddingResponse{
+				Object: "list",
+				Data:   data,
+				Model:  "nomic-embed-text",
+			})
 		}))
 		defer server.Close()
 
-		e := NewOllamaEmbedder(server.URL, "nomic-embed-text")
+		e, err := NewOllamaEmbedder(server.URL, "nomic-embed-text")
+		if err != nil {
+			t.Fatalf("NewOllamaEmbedder failed: %v", err)
+		}
 		vecs, err := e.Embed(context.Background(), []string{"hello", "world"})
 		if err != nil {
 			t.Fatalf("Embed failed: %v", err)
@@ -97,15 +115,22 @@ func TestEmbedder_MockProvider(t *testing.T) {
 
 	t.Run("EmbedQuery", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			resp := ollamaEmbedResponse{
-				Model:      "nomic-embed-text",
-				Embeddings: [][]float64{{0.1, 0.2, 0.3}},
+			data := []mockEmbeddingData{
+				{Object: "embedding", Embedding: []float64{0.1, 0.2, 0.3}, Index: 0},
 			}
-			json.NewEncoder(w).Encode(resp)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(mockEmbeddingResponse{
+				Object: "list",
+				Data:   data,
+				Model:  "nomic-embed-text",
+			})
 		}))
 		defer server.Close()
 
-		e := NewOllamaEmbedder(server.URL, "nomic-embed-text")
+		e, err := NewOllamaEmbedder(server.URL, "nomic-embed-text")
+		if err != nil {
+			t.Fatalf("NewOllamaEmbedder failed: %v", err)
+		}
 		vec, err := e.EmbedQuery(context.Background(), "hello")
 		if err != nil {
 			t.Fatalf("EmbedQuery failed: %v", err)
@@ -118,12 +143,15 @@ func TestEmbedder_MockProvider(t *testing.T) {
 	t.Run("Embed_ErrorStatus", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("bad request"))
+			w.Write([]byte(`{"error":{"message":"bad request"}}`))
 		}))
 		defer server.Close()
 
-		e := NewOllamaEmbedder(server.URL, "nomic-embed-text")
-		_, err := e.Embed(context.Background(), []string{"test"})
+		e, err := NewOllamaEmbedder(server.URL, "nomic-embed-text")
+		if err != nil {
+			t.Fatalf("NewOllamaEmbedder failed: %v", err)
+		}
+		_, err = e.Embed(context.Background(), []string{"test"})
 		if err == nil {
 			t.Fatal("expected error for 400 status")
 		}
@@ -141,7 +169,10 @@ func TestEmbedder_Ollama(t *testing.T) {
 	model := ollamaEmbedModel()
 
 	t.Run("Embed", func(t *testing.T) {
-		e := NewOllamaEmbedder(baseURL, model)
+		e, err := NewOllamaEmbedder(baseURL, model)
+		if err != nil {
+			t.Fatalf("NewOllamaEmbedder failed: %v", err)
+		}
 		vecs, err := e.Embed(context.Background(), []string{"hello", "world"})
 		if err != nil {
 			t.Fatalf("Embed failed: %v", err)
@@ -164,7 +195,10 @@ func TestEmbedder_Ollama(t *testing.T) {
 	})
 
 	t.Run("EmbedQuery", func(t *testing.T) {
-		e := NewOllamaEmbedder(baseURL, model)
+		e, err := NewOllamaEmbedder(baseURL, model)
+		if err != nil {
+			t.Fatalf("NewOllamaEmbedder failed: %v", err)
+		}
 		vec, err := e.EmbedQuery(context.Background(), "What is the meaning of life?")
 		if err != nil {
 			t.Fatalf("EmbedQuery failed: %v", err)
@@ -177,7 +211,10 @@ func TestEmbedder_Ollama(t *testing.T) {
 	})
 
 	t.Run("Embed_EmptyInput", func(t *testing.T) {
-		e := NewOllamaEmbedder(baseURL, model)
+		e, err := NewOllamaEmbedder(baseURL, model)
+		if err != nil {
+			t.Fatalf("NewOllamaEmbedder failed: %v", err)
+		}
 		vecs, err := e.Embed(context.Background(), []string{})
 		if err != nil {
 			t.Fatalf("Embed with empty input failed: %v", err)
