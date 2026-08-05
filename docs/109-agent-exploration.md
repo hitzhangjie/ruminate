@@ -17,7 +17,7 @@
 
 2. **通用探索用 ReAct，够用且不复杂**  
    - `Thought → Action(tool) → Observation` + 预算  
-   - 产品形态：`ruminate ask --agent`（或 `ruminate agent`）  
+   - 产品形态：`ruminate ask` / `ruminate ask --mode=agent`（默认；亦兼容 `--agent`）  
 
 3. **读代码默认不依赖 gopls**  
    - **P0 代码工具**：`file_grep`（rg）+ **tree-sitter**（大纲、定义候选、**包围函数/块**）+ `file_read`  
@@ -132,7 +132,7 @@ for step := 0; step < maxSteps; step++ {
 
 > **Agent 工具 ≠ 单轮 ask 管线。** Agent 自己做多步决策，工具应是廉价导航原语。
 > 默认策略：`wiki_index`（目录，**先无 filter**）→ **术语桥接** 后 `wiki_read` 近义标题 → 需要字面命中时用 `wiki_search`（**仅 FTS/BM25**，无 embedding / 无 query expansion / 无 MMR）。
-> Hybrid Search + effort 只属于非 agent 的 `ask` 路径。
+> Hybrid Search + `--effort` 只属于 `--mode=rag`（经典单轮 RAG 管线），**不**作用于默认的 agent 模式。
 >
 > **System prompt（P0）**（`buildSystemPrompt`）强制：
 > 1. 注入 **filesystem roots 绝对路径**（含 `--agent-root`）；`list_dir` 空 path 可再列 roots  
@@ -279,7 +279,7 @@ Final: wiki/raw 意图 + 代码实现片段 + references
 
 | 用法 | 何时 |
 |------|------|
-| **A. `ruminate ask --agent`** | 知识库问答、核对 raw、rg+tree-sitter 探代码 |
+| **A. `ruminate ask`（`--mode=agent` 默认）** | 知识库问答、核对 raw、rg+tree-sitter 探代码 |
 | **B. 外部 agent + skill** | 人已在 IDE/终端 agent 里，顺带查 wiki |
 | **C. 外部 agent + ruminate MCP（+ 可选 gopls）** | 知识层对外；语义 LSP 由宿主自挂 |
 
@@ -434,7 +434,8 @@ ask --evidence auto
 ### 场景 3：架构问题 + 代码验证（内嵌 ReAct，无 gopls）
 
 ```text
-ruminate ask --agent "Reconcile 会不会阻塞？"
+ruminate ask "Reconcile 会不会阻塞？"   # 默认 --mode=agent
+ruminate ask --mode=agent --agent-root ~/code "Where is Hello?"
   → wiki_search / wiki_read
   → raw_read(ADR)
   → symbol_search / file_grep
@@ -463,7 +464,7 @@ ruminate ask --agent "Reconcile 会不会阻塞？"
 | 能力 | 说明 |
 |------|------|
 | frontmatter `sources` | raw 回退 |
-| `ask --evidence wiki\|auto\|raw` | 无多步分层 |
+| `ask --mode=rag --evidence wiki\|auto\|raw` | 无多步分层（rag 管线） |
 | **ReAct + wiki/raw + file_grep + tree-sitter** | 含 `read_enclosing` / `symbol_search` |
 | `agent.roots` 沙箱 | 限制可读路径 |
 

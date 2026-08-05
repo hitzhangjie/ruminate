@@ -154,7 +154,7 @@ type Step struct { Index, Thought, Action, Args, Observation, … }
 
 ## 七、验收
 
-- [x] TTY 下 `ask --agent`：等待时有 spinner，完成时为卡片而非文本墙  
+- [x] TTY 下 `ask` / `ask --mode=agent`：等待时有 spinner，完成时为卡片而非文本墙  
 - [x] 错误步：红/✗ + `⎿` 错误首行，可选短 thought  
 - [x] 成功步：不默认倾倒 Thought/Observation  
 - [x] 非 TTY：无 spinner 控制序列动画；紧凑文本可用  

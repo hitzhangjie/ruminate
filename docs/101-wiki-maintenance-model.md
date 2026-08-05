@@ -72,7 +72,7 @@ Evidence（raw/、外部源仓、代码树…）  ──ingest──►  Synthes
 1. **`ruminate lint --fix`**：LLM 从 lint issue 修改 **wiki** pages（理解层）。issues 序列化到隐藏文件；过期（如 1 day）则重跑检测。  
 2. **Contributing sources（提升优先级）**：每个 wiki page frontmatter 记录贡献的 raw paths，支撑 L2 回退与事实追溯。见 [108](108-dual-truth-and-layered-retrieval.md) §4.1。  
 3. **`ruminate rebuild`**：从 raw 重建 wiki，对抗蒸馏偏差沉积。  
-4. **分层查询**：`ask --evidence wiki|auto|raw`；完整多步探索集成通用 agent（[109](109-agent-exploration.md)）。  
+4. **分层查询**：默认 `ask`（`--mode=agent`）多步探索；单轮 RAG 用 `ask --mode=rag --evidence wiki|auto|raw`（[109](109-agent-exploration.md)）。  
 5. **事实修复规范**：lint 报告事实类 issue 时，尽量展示 contributing sources，提示「应核对的 Evidence」。
 
 ## 参考

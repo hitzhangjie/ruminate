@@ -153,12 +153,12 @@
 | # | 任务 | 状态 | 负责人 | 备注 |
 |---|------|------|--------|------|
 | 7.1 | Contributing sources frontmatter | ✅ | — | ingest 写入 `sources:`；`wiki.ParseFrontMatter` |
-| 7.2 | `ask --evidence wiki\|auto\|raw` | ✅ | — | L1→L2 无多步分层 |
+| 7.2 | `ask --mode=rag --evidence wiki\|auto\|raw` | ✅ | — | L1→L2；默认 auto；仅 rag 管线 |
 | 7.3 | Raw 独立检索 | ✅ | — | `raw_fts`；`SearchRaw`；不与 wiki 混排 |
 | 7.4 | **ReAct 运行时** + tool registry | ✅ | — | `internal/agent`；JSON tool-call；预算/trace |
 | 7.5 | Knowledge + file_grep/read（roots） | ✅ | — | wiki_* / raw_* / rg + 内置 grep 回退 |
 | 7.6 | **代码智能**：outline / symbol_search / **read_enclosing** | ✅ | — | P0 用 go/ast（Go）；同 tool API，tree-sitter 多语言见 7.8 |
-| 7.7 | `ask --agent` | ✅ | — | `--agent-root`、`--max-steps`；默认只读、无 gopls |
+| 7.7 | `ask --mode=agent`（默认） | ✅ | — | `--agent-root`、`--max-steps`；兼容 `--agent`；默认只读、无 gopls |
 | 7.7a | Agent 步呈现 Phase A（紧凑 CLI） | ✅ | — | 非 TTY / 管道：一行/步；失败展开；`-v` 全量 |
 | 7.7b | Agent 步呈现 Phase B（Live view） | ✅ | — | [111](111-agent-step-presentation.md)：TTY spinner+卡片（lipgloss）；`OnProgress` |
 | 7.7c | Agent 步呈现 B+/C（全屏 TUI / Web） | ⬜ | — | 可选 Bubble Tea；SSE 折叠卡片 |
@@ -169,7 +169,8 @@
 | 7.12 | （可选）code_anchors + stale lint | ⬜ | — | |
 
 **可交付**：
-- `ask --agent`：wiki → raw → rg/tree-sitter → 包围函数体
+- `ask` / `ask --mode=agent`：wiki → raw → rg/tree-sitter → 包围函数体
+- `ask --mode=rag`：经典单轮 RAG（`--effort` / `--evidence` 仅此模式）
 - 无 gopls 也可做代码核对；可选再挂 LSP
 - 答案标注 Synthesis vs Evidence vs Code
 
@@ -204,3 +205,4 @@
 | 2026-08-04 | Phase 7.1–7.7 实现：sources frontmatter、evidence 分层、raw_fts、ReAct agent（go/ast 代码工具） |
 | 2026-08-05 | 111：Agent 呈现设计；Phase A 紧凑 CLI 时间线（默认一行/步，失败展开，-v 全量） |
 | 2026-08-05 | 111 Phase B：TTY live view（OnProgress + agentview spinner/卡片，对齐 Claude Code） |
+| 2026-08-05 | ask：`--mode=agent\|rag`，默认 agent；`--effort`/`--evidence` 仅 rag；`--agent` 保留为兼容别名 |

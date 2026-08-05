@@ -104,9 +104,9 @@ Wiki **不是** Evidence 的替代品，而是 Evidence 之上的 **编译视图
 | 模式 | CLI 示意 | 行为 |
 |------|----------|------|
 | `wiki`（默认，兼容现状） | `ruminate ask "..."` | 仅 L1，单轮 RAG |
-| `auto` | `ruminate ask "..." --evidence auto` | L1 → 不足则 L2 |
-| `raw` | `ruminate ask "..." --evidence raw` | L1+L2 同时或强制带 raw 片段 |
-| `agent`（P1） | `ruminate ask "..." --agent` | **ReAct**；wiki/raw + rg/tree-sitter；gopls 可选 |
+| `auto`（默认） | `ruminate ask --mode=rag "..." --evidence auto` | L1 → 不足则 L2（**仅 rag 管线**） |
+| `raw` | `ruminate ask --mode=rag "..." --evidence raw` | L1+L2 同时或强制带 raw 片段 |
+| `agent`（默认 ask） | `ruminate ask "..."` / `--mode=agent` | **ReAct**；wiki/raw + rg/tree-sitter；gopls 可选 |
 
 「不足」的判定（启发式，可迭代）：
 
@@ -194,7 +194,7 @@ sources:
 
 1. 确立本文与 101 的双真相表述
 2. ingest 写入 `sources` frontmatter
-3. `ask --evidence auto|raw|wiki`：auto 时对命中页的 sources 读入 raw 片段
+3. `ask --mode=rag --evidence auto|raw|wiki`：auto 时对命中页的 sources 读入 raw 片段
 
 ### Phase B — Raw 独立检索
 

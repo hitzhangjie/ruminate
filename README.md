@@ -60,15 +60,15 @@ ruminate ingest https://example.com/post       # 网页 URL
 # 3. 全文搜索
 ruminate find "机器学习"                        # 关键词搜索，高亮片段
 
-# 4. AI 问答
-ruminate ask "如何理解反向传播？"                # 基于 Wiki 的流式问答
-ruminate ask "什么是过拟合" --effort balanced   # 多角度查询扩展检索
-ruminate ask "什么是过拟合" --effort thorough   # HyDE 假设文档检索
-ruminate ask "原文默认超时是多少？" --evidence auto  # L1 不足时回退 raw Evidence
-ruminate ask --agent "Reconcile 会不会阻塞？"    # ReAct 多步探索（TTY：spinner+卡片）
-ruminate ask --agent -v "…"                   # 完整 prompt / thought / action / observation
-ruminate ask --agent --agent-root ~/code "Where is Hello?"  # 指定额外代码搜索根目录
-ruminate ask --agent --max-steps 20 "..."     # 自定义最大探索步数（默认 32）
+# 4. AI 问答（默认 --mode=agent）
+ruminate ask "如何理解反向传播？"                # 默认：ReAct 多步探索（可回退 raw/代码）
+ruminate ask --mode=agent -v "…"              # 完整 prompt / thought / action / observation
+ruminate ask --mode=agent --agent-root ~/code "Where is Hello?"  # 额外代码根目录
+ruminate ask --mode=agent --max-steps 20 "..." # 自定义最大探索步数（默认 32）
+ruminate ask --mode=rag "什么是过拟合"         # 经典单轮 RAG 检索管线
+ruminate ask --mode=rag --effort balanced "什么是过拟合"   # 查询扩展（仅 rag）
+ruminate ask --mode=rag --effort thorough "什么是过拟合"   # HyDE（仅 rag）
+ruminate ask --mode=rag --evidence auto "原文默认超时是多少？"  # L1 不足回退 raw（默认 auto）
 ruminate ask "什么是 KL 散度" --save            # 好答案回写 Wiki
 
 # 5. 知识库巡检
@@ -116,9 +116,14 @@ ruminate reindex
 
 **双真相**：Wiki 是编译后的理解；raw/源码是可核对的证据。提炼会丢信息——查询时应能 **先 Wiki、不够再回退 Evidence**。详见 [docs/108](docs/108-dual-truth-and-layered-retrieval.md)、[docs/109](docs/109-agent-exploration.md)。
 
-### 检索管道
+### 查询模式（`--mode`）
 
-`ruminate ask` 的完整检索管道（可配置搜索力度）：
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| **`agent`（默认）** | 多步 ReAct：工具循环探索 wiki / raw / 代码根 | 灵活、可追蒸馏时丢弃的细节；准确率优先 |
+| **`rag`** | 经典单轮 RAG：检索 →（可选扩写）→ 综合生成 | 低延迟、可预测；调 `--effort` / `--evidence` |
+
+**`rag` 检索管线**（`--effort` / `--evidence` 仅在此模式生效）：
 
 ```
 Query
@@ -130,10 +135,11 @@ Query
   ├── FTS5 全文检索（CJK bigram 分词） → RRF 混合融合
   ├── MMR 多样性重排（避免单一种类结果垄断）
   ├── LLM listwise 重排序（过滤无关结果 + 精确排序）
+  ├── --evidence auto：L1 不足时回退 L2 raw Evidence
   └── 返回 top-N 结果 → LLM 综合回答 + 引用
 ```
 
-**分层回退 / Agent**：L1 Wiki → L2 raw → L3 代码。`--evidence auto` 自动从 Wiki 回退到 raw Evidence；`--agent` 启用 **ReAct** 多步探索；代码默认 **rg + tree-sitter**（可只读包围函数，不上 gopls）。见 [docs/108](docs/108-dual-truth-and-layered-retrieval.md)、[docs/109](docs/109-agent-exploration.md)。
+**分层回退 / Agent**：L1 Wiki → L2 raw → L3 代码。`agent` 默认用工具梯子自行探索；`rag` 用 `--evidence auto` 做 L1→L2 自动升级。代码默认 **rg + tree-sitter**（可只读包围函数，不上 gopls）。见 [docs/108](docs/108-dual-truth-and-layered-retrieval.md)、[docs/109](docs/109-agent-exploration.md)。
 
 ---
 
@@ -167,13 +173,14 @@ Query
 | 全文搜索   | SQLite FTS5 + CJK bigram 分词，BM25 排序，片段高亮                            |
 | 向量检索   | Ollama / 混元 embedding 语义搜索                                                |
 | 混合检索   | FTS5 + 向量 RRF 融合，互补召回                                                |
-| 查询扩展   | `--effort balanced`：多查询变体 + RRF；`--effort thorough`：HyDE 假设文档 |
-| MMR 多样性 | 去重去聚类，保证结果多样性                                                    |
-| LLM 重排序 | listwise 相关度排序，自动过滤不相关候选项                                     |
-| 流式回答   | `ruminate ask` 实时流式输出                                                 |
+| 双模式问答 | `--mode=agent`（默认 ReAct）\| `--mode=rag`（经典单轮检索管线）            |
+| 查询扩展   | `--effort balanced\|thorough`（**仅 rag**）：多查询变体 / HyDE              |
+| MMR 多样性 | 去重去聚类，保证结果多样性（rag 管线）                                        |
+| LLM 重排序 | listwise 相关度排序，自动过滤不相关候选项（rag 管线）                         |
+| 流式回答   | `--mode=rag` 实时流式输出；agent 完成后输出完整答案                         |
 | 引用溯源   | 每个回答附带来源页面，可追溯验证                                              |
-| 分层召回   | `--evidence wiki\|auto\|raw`：Wiki 不足时回退 raw Evidence（双真相）        |
-| Agent 探索 | `--agent`：ReAct；TTY 默认 live view（spinner+卡片，对齐 Claude Code）；非 TTY 紧凑文本；`-v` 全量 transcript；见 [docs/111](docs/111-agent-step-presentation.md) |
+| 分层召回   | `--evidence wiki\|auto\|raw`（**仅 rag**，默认 auto）：L1 不足回退 raw     |
+| Agent 探索 | `--mode=agent`：ReAct；TTY live view；`-v` 全量 transcript；见 [docs/111](docs/111-agent-step-presentation.md) |
 | 回答回写   | `--save` 将优质回答保存为 Wiki 页面                                         |
 
 ### 巡检（Lint）

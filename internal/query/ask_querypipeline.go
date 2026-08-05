@@ -9,12 +9,13 @@ import (
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
-// AskOptions controls AI question-answering behavior.
+// AskOptions controls the single-pass RAG ask path (--mode=rag).
+// Agent mode uses agent.Options instead; --effort/--evidence do not apply there.
 type AskOptions struct {
 	TopN     int               // Number of diverse search results to use as LLM context.
 	NoStream bool              // Disable streaming output.
-	Effort   wiki.SearchEffort // Query expansion effort level (fast/balanced/thorough).
-	// Evidence controls L1→L2 layered retrieval (wiki|auto|raw). See docs/108.
+	Effort   wiki.SearchEffort // Query expansion effort level (fast/balanced/thorough); rag only.
+	// Evidence controls L1→L2 layered retrieval (wiki|auto|raw). See docs/108. Rag only.
 	Evidence EvidenceMode
 }
 

@@ -202,6 +202,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		return nil, fmt.Errorf("sandbox: %w", err)
 	}
 
+	// register needed tools
 	reg := tools.NewRegistry()
 	tools.RegisterKnowledgeTools(reg, e.wiki)
 	tools.RegisterFileTools(reg, sb)
@@ -212,6 +213,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		defer e.tracer.End()
 	}
 
+	// agent runs ReACT loop
 	var transcript []string
 	var steps []Step
 	var totalPrompt, totalCompletion, totalPromptChars int

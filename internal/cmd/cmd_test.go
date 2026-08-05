@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
 	"github.com/hitzhangjie/ruminate/internal/agent"
 	"github.com/hitzhangjie/ruminate/internal/lint"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
@@ -47,6 +50,103 @@ func TestParseEffort_Constants(t *testing.T) {
 	}
 	if wiki.SearchEffortThorough != "thorough" {
 		t.Errorf("SearchEffortThorough = %q, want 'thorough'", wiki.SearchEffortThorough)
+	}
+}
+
+// =============================================================================
+// resolveAskMode (ask.go) — --mode=agent|rag + flag scope
+// =============================================================================
+
+func TestResolveAskMode_DefaultsToAgent(t *testing.T) {
+	resetAskFlags(t)
+	mode, err := resolveAskMode(askCmd)
+	if err != nil {
+		t.Fatalf("resolveAskMode: %v", err)
+	}
+	if mode != askModeAgent {
+		t.Errorf("default mode = %q, want %q", mode, askModeAgent)
+	}
+}
+
+func TestResolveAskMode_RAG(t *testing.T) {
+	resetAskFlags(t)
+	askMode = askModeRAG
+	// RAG-only flags may be set when mode is rag.
+	setFlagChanged(askCmd, "effort", true)
+	setFlagChanged(askCmd, "evidence", true)
+	mode, err := resolveAskMode(askCmd)
+	if err != nil {
+		t.Fatalf("resolveAskMode: %v", err)
+	}
+	if mode != askModeRAG {
+		t.Errorf("mode = %q, want %q", mode, askModeRAG)
+	}
+}
+
+func TestResolveAskMode_RAGFlagsRejectOnAgent(t *testing.T) {
+	resetAskFlags(t)
+	askMode = askModeAgent
+	setFlagChanged(askCmd, "effort", true)
+	_, err := resolveAskMode(askCmd)
+	if err == nil {
+		t.Fatal("expected error for --effort under agent mode")
+	}
+	if !strings.Contains(err.Error(), "--effort") || !strings.Contains(err.Error(), "rag") {
+		t.Errorf("error should mention --effort and rag: %v", err)
+	}
+}
+
+func TestResolveAskMode_EvidenceRejectOnAgent(t *testing.T) {
+	resetAskFlags(t)
+	askMode = askModeAgent
+	setFlagChanged(askCmd, "evidence", true)
+	_, err := resolveAskMode(askCmd)
+	if err == nil {
+		t.Fatal("expected error for --evidence under agent mode")
+	}
+}
+
+func TestResolveAskMode_AgentFlagsRejectOnRAG(t *testing.T) {
+	resetAskFlags(t)
+	askMode = askModeRAG
+	setFlagChanged(askCmd, "max-steps", true)
+	_, err := resolveAskMode(askCmd)
+	if err == nil {
+		t.Fatal("expected error for --max-steps under rag mode")
+	}
+	if !strings.Contains(err.Error(), "--max-steps") || !strings.Contains(err.Error(), "agent") {
+		t.Errorf("error should mention --max-steps and agent: %v", err)
+	}
+}
+
+func TestResolveAskMode_InvalidMode(t *testing.T) {
+	resetAskFlags(t)
+	askMode = "pipeline"
+	_, err := resolveAskMode(askCmd)
+	if err == nil {
+		t.Fatal("expected invalid mode error")
+	}
+}
+
+// resetAskFlags restores package-level ask flag vars and clears Flag.Changed.
+func resetAskFlags(t *testing.T) {
+	t.Helper()
+	askNoStream = false
+	askTopN = 20
+	askEffort = "fast"
+	askEvidence = "auto"
+	askMode = askModeAgent
+	askMaxSteps = agent.DefaultMaxSteps
+	askAgentRoot = nil
+	askCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		f.Changed = false
+	})
+}
+
+func setFlagChanged(cmd *cobra.Command, name string, changed bool) {
+	f := cmd.Flags().Lookup(name)
+	if f != nil {
+		f.Changed = changed
 	}
 }
 

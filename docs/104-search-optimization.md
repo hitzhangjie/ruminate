@@ -172,9 +172,10 @@ Vector search (200) → FTS boosting (RRF) → MMR diversity (50) → LLM Rerank
 
 **使用方式**：
 ```bash
-ruminate ask --effort fast "Go GC 如何适应透明巨页"      # 基准行为
-ruminate ask --effort balanced "Go GC 如何适应透明巨页"   # 查询扩展
-ruminate ask --effort thorough "Go GC 如何适应透明巨页"   # HyDE
+# --effort 仅在 --mode=rag 下生效（agent 模式拒绝该 flag）
+ruminate ask --mode=rag --effort fast "Go GC 如何适应透明巨页"      # 基准行为
+ruminate ask --mode=rag --effort balanced "Go GC 如何适应透明巨页"   # 查询扩展
+ruminate ask --mode=rag --effort thorough "Go GC 如何适应透明巨页"   # HyDE
 ```
 
 ```

@@ -19,47 +19,59 @@ import (
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
+// Ask modes: agent (default ReAct explorer) vs rag (single-pass retrieval pipeline).
+const (
+	askModeAgent = "agent"
+	askModeRAG   = "rag"
+)
+
 var (
 	askNoStream  bool
 	askTopN      int
 	askEffort    string
 	askEvidence  string
-	askAgent     bool
+	askMode      string
 	askMaxSteps  int
 	askAgentRoot []string
 )
 
 var askCmd = &cobra.Command{
 	Use:   "ask <question>",
-	Short: "Ask a question and get AI-synthesized answer from wiki",
-	Long: `Search relevant wiki pages and use LLM to synthesize
-a comprehensive answer with references.
+	Short: "Ask a question and get an AI answer from wiki (agent by default)",
+	Long: `Answer questions against the wiki using one of two modes.
 
-The ask pipeline (default):
-  1. Search wiki pages using hybrid/FTS retrieval (L1 Synthesis)
-  2. Auto-escalate to raw Evidence when needed (L2; configurable via --evidence)
-  3. Build LLM prompt with context + question
-  4. Stream the synthesized answer (or --no-stream)
-  5. Answer includes references in [[page]] notation
+Modes (--mode):
+  agent (default)  Multi-step ReAct exploration (docs/109, docs/111).
+                   Tools: wiki_*, raw_*, file_grep/read, symbol_search, read_enclosing.
+                   Can reach code/extra roots via --agent-root — good when distillation
+                   dropped details that still live in raw/ or source trees.
+                   TTY: live spinner + step cards; non-TTY: compact timeline; -v: full transcript.
 
-Agent mode (--agent): multi-step ReAct exploration (docs/109, docs/111).
-  Uses tools: wiki_*, raw_*, file_grep/read, symbol_search, read_enclosing.
-  Default read-only; code intelligence is syntactic (go/ast), not gopls.
+  rag              Single-pass RAG pipeline (classic retrieve → generate):
+                   1. Hybrid/FTS retrieval over wiki (L1 Synthesis)
+                   2. Optional L2 raw Evidence via --evidence (default: auto)
+                   3. Optional query expansion via --effort (fast|balanced|thorough)
+                   4. One-shot LLM synthesis with [[page]] references
 
-  On a TTY, progress uses a Claude Code–style live view (spinner + step cards).
-  Non-TTY / pipes use a compact one-line timeline. Failed steps surface errors.
-  With -v/--verbose, prints full Thought → Action → Observation plus
-  decide-round prompts and raw LLM response (docs/111).
+Flag scope:
+  --effort, --evidence, --top-n, --no-stream  only apply to --mode=rag
+  --max-steps, --agent-root                   only apply to --mode=agent
 
 Examples:
-  ruminate ask "What is RAG?"
-  ruminate ask --evidence auto "原文默认超时是多少？"
-  ruminate ask --agent "Reconcile 会不会阻塞？"
-  ruminate ask --agent -v "…"   # full prompt + thought + action + observation
-  ruminate ask --agent --agent-root /path/to/code "Where is Hello defined?"`,
+  ruminate ask "What is RAG?"                          # agent (default)
+  ruminate ask --mode=agent -v "Reconcile 会阻塞吗？"
+  ruminate ask --mode=agent --agent-root ~/code "Where is Hello?"
+  ruminate ask --mode=rag "什么是过拟合"
+  ruminate ask --mode=rag --evidence auto "原文默认超时是多少？"
+  ruminate ask --mode=rag --effort thorough "…"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		question := strings.Join(args, " ")
+
+		mode, err := resolveAskMode(cmd)
+		if err != nil {
+			return err
+		}
 
 		// Load configuration
 		wikiName, _ := cmd.Flags().GetString("wiki")
@@ -84,19 +96,18 @@ Examples:
 			cancel()
 		}()
 
-		// Create query engine once — shared by ask and agent paths.
+		// Create query engine once — shared by agent and rag paths.
 		engine, err := query.NewEngine(cfg)
 		if err != nil {
 			return err
 		}
 		engine.SetTracer(tracer)
 
-		// mode1: agent exploration mode
-		if askAgent {
+		if mode == askModeAgent {
 			return runAgent(ctx, engine, question)
 		}
 
-		// mode2: query/recall pipeline
+		// --mode=rag: single-pass retrieval pipeline
 		effort := parseEffort(askEffort)
 		opts := &query.AskOptions{
 			TopN:     askTopN,
@@ -113,17 +124,80 @@ Examples:
 }
 
 func init() {
-	askCmd.Flags().BoolVar(&askNoStream, "no-stream", false, "Disable streaming output (wait for full answer)")
-	askCmd.Flags().IntVarP(&askTopN, "top-n", "n", query.DefaultTopN, "Number of diverse search results to use as LLM context")
-	askCmd.Flags().StringVar(&askEffort, "effort", "fast", "Search effort level: fast (no expansion), balanced (query expansion), thorough (HyDE)")
-	askCmd.Flags().StringVar(&askEvidence, "evidence", "auto", "Evidence layer: auto (escalate when needed), raw (always attach sources), wiki (L1 only)")
-	askCmd.Flags().BoolVar(&askAgent, "agent", false, "Use multi-step ReAct agent (wiki/raw/code tools; read-only)")
-	askCmd.Flags().IntVar(&askMaxSteps, "max-steps", agent.DefaultMaxSteps, "Max ReAct steps when --agent is set")
-	askCmd.Flags().StringArrayVar(&askAgentRoot, "agent-root", nil, "Extra filesystem root the agent may read (repeatable); wiki/raw always included")
+	askCmd.Flags().StringVar(&askMode, "mode", askModeAgent, "Ask mode: agent (default ReAct) or rag (single-pass retrieval pipeline)")
+	askCmd.Flags().BoolVar(&askNoStream, "no-stream", false, "Disable streaming output (rag mode only)")
+	askCmd.Flags().IntVarP(&askTopN, "top-n", "n", query.DefaultTopN, "Number of diverse search results for LLM context (rag mode only)")
+	askCmd.Flags().StringVar(&askEffort, "effort", "fast", "Search effort: fast|balanced|thorough (rag mode only; ignored by agent)")
+	askCmd.Flags().StringVar(&askEvidence, "evidence", "auto", "Evidence layer: auto|raw|wiki (rag mode only; default auto)")
+	askCmd.Flags().IntVar(&askMaxSteps, "max-steps", agent.DefaultMaxSteps, "Max ReAct steps (agent mode only)")
+	askCmd.Flags().StringArrayVar(&askAgentRoot, "agent-root", nil, "Extra filesystem root the agent may read (agent mode only; repeatable)")
+}
+
+// resolveAskMode returns the effective ask mode after validating flag combinations.
+// Default is agent.
+// RAG-only flags (--effort, --evidence, --top-n, --no-stream) error when used with agent.
+// Agent-only flags (--max-steps, --agent-root) error when used with rag.
+func resolveAskMode(cmd *cobra.Command) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(askMode))
+	if mode == "" {
+		mode = askModeAgent
+	}
+	switch mode {
+	case askModeAgent, askModeRAG:
+	default:
+		return "", fmt.Errorf("invalid --mode %q (want agent or rag)", askMode)
+	}
+
+	if mode == askModeAgent {
+		if err := rejectRAGOnlyFlags(cmd); err != nil {
+			return "", err
+		}
+	} else {
+		if err := rejectAgentOnlyFlags(cmd); err != nil {
+			return "", err
+		}
+	}
+	return mode, nil
+}
+
+// rejectRAGOnlyFlags errors when retrieval-pipeline knobs are set under agent mode.
+func rejectRAGOnlyFlags(cmd *cobra.Command) error {
+	var bad []string
+	if cmd.Flags().Changed("effort") {
+		bad = append(bad, "--effort")
+	}
+	if cmd.Flags().Changed("evidence") {
+		bad = append(bad, "--evidence")
+	}
+	if cmd.Flags().Changed("top-n") {
+		bad = append(bad, "--top-n")
+	}
+	if cmd.Flags().Changed("no-stream") {
+		bad = append(bad, "--no-stream")
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s only apply to --mode=rag (current mode is agent)", strings.Join(bad, ", "))
+}
+
+// rejectAgentOnlyFlags errors when agent knobs are set under rag mode.
+func rejectAgentOnlyFlags(cmd *cobra.Command) error {
+	var bad []string
+	if cmd.Flags().Changed("max-steps") {
+		bad = append(bad, "--max-steps")
+	}
+	if cmd.Flags().Changed("agent-root") {
+		bad = append(bad, "--agent-root")
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s only apply to --mode=agent (current mode is rag)", strings.Join(bad, ", "))
 }
 
 // parseEffort converts a CLI effort string to a wiki.SearchEffort value.
-// Unknown values default to SearchEffortFast.
+// Unknown values default to SearchEffortFast. Only meaningful for --mode=rag.
 func parseEffort(s string) wiki.SearchEffort {
 	switch s {
 	case "balanced":
