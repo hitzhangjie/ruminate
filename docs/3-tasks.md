@@ -159,6 +159,9 @@
 | 7.5 | Knowledge + file_grep/read（roots） | ✅ | — | wiki_* / raw_* / rg + 内置 grep 回退 |
 | 7.6 | **代码智能**：outline / symbol_search / **read_enclosing** | ✅ | — | P0 用 go/ast（Go）；同 tool API，tree-sitter 多语言见 7.8 |
 | 7.7 | `ask --agent` | ✅ | — | `--agent-root`、`--max-steps`；默认只读、无 gopls |
+| 7.7a | Agent 步呈现 Phase A（紧凑 CLI） | ✅ | — | 非 TTY / 管道：一行/步；失败展开；`-v` 全量 |
+| 7.7b | Agent 步呈现 Phase B（Live view） | ✅ | — | [111](111-agent-step-presentation.md)：TTY spinner+卡片（lipgloss）；`OnProgress` |
+| 7.7c | Agent 步呈现 B+/C（全屏 TUI / Web） | ⬜ | — | 可选 Bubble Tea；SSE 折叠卡片 |
 | 7.8 | 更多 language grammars | ⬜ | — | py/ts/… 同一 tool API（tree-sitter） |
 | 7.9 | `ask --json` / 结构化 references | ⬜ | — | |
 | 7.10 | 对外 `ruminate mcp` + skill | ⬜ | — | |
@@ -199,3 +202,5 @@
 | 2026-08-04 | 109：选定内嵌 ReAct；file tools 可读代码/原文；Go 组合 gopls MCP；Phase 7 任务调整 |
 | 2026-08-04 | 109：代码默认改为 rg+tree-sitter；gopls 降为可选；enclosing 进 P0 |
 | 2026-08-04 | Phase 7.1–7.7 实现：sources frontmatter、evidence 分层、raw_fts、ReAct agent（go/ast 代码工具） |
+| 2026-08-05 | 111：Agent 呈现设计；Phase A 紧凑 CLI 时间线（默认一行/步，失败展开，-v 全量） |
+| 2026-08-05 | 111 Phase B：TTY live view（OnProgress + agentview spinner/卡片，对齐 Claude Code） |

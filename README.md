@@ -65,7 +65,8 @@ ruminate ask "如何理解反向传播？"                # 基于 Wiki 的流�
 ruminate ask "什么是过拟合" --effort balanced   # 多角度查询扩展检索
 ruminate ask "什么是过拟合" --effort thorough   # HyDE 假设文档检索
 ruminate ask "原文默认超时是多少？" --evidence auto  # L1 不足时回退 raw Evidence
-ruminate ask --agent "Reconcile 会不会阻塞？"    # ReAct 多步探索（wiki/raw/代码）
+ruminate ask --agent "Reconcile 会不会阻塞？"    # ReAct 多步探索（TTY：spinner+卡片）
+ruminate ask --agent -v "…"                   # 完整 prompt / thought / action / observation
 ruminate ask --agent --agent-root ~/code "Where is Hello?"  # 指定额外代码搜索根目录
 ruminate ask --agent --max-steps 20 "..."     # 自定义最大探索步数（默认 32）
 ruminate ask "什么是 KL 散度" --save            # 好答案回写 Wiki
@@ -172,7 +173,7 @@ Query
 | 流式回答   | `ruminate ask` 实时流式输出                                                 |
 | 引用溯源   | 每个回答附带来源页面，可追溯验证                                              |
 | 分层召回   | `--evidence wiki\|auto\|raw`：Wiki 不足时回退 raw Evidence（双真相）        |
-| Agent 探索 | `--agent`：ReAct 多步工具调用；`--agent-root` 指定代码搜索目录；`--max-steps` 控制步数 |
+| Agent 探索 | `--agent`：ReAct；TTY 默认 live view（spinner+卡片，对齐 Claude Code）；非 TTY 紧凑文本；`-v` 全量 transcript；见 [docs/111](docs/111-agent-step-presentation.md) |
 | 回答回写   | `--save` 将优质回答保存为 Wiki 页面                                         |
 
 ### 巡检（Lint）
@@ -193,6 +194,7 @@ Query
 | -------- | ----------------------------------------- |
 | 管道追踪 | `-v/--verbose` 启用 span-based 追踪日志 |
 | 分级输出 | 实时显示每阶段的候选数、延迟、文档 ID     |
+| Agent 轨迹 | TTY：`● tool · args` + `⎿` 摘要/错误 + Thinking spinner；非 TTY 一行摘要；`-v` 全量（[docs/111](docs/111-agent-step-presentation.md)） |
 
 ---
 

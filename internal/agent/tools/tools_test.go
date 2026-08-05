@@ -2,6 +2,9 @@ package tools
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +61,44 @@ func TestExecResolvesNamespacedName(t *testing.T) {
 	}
 	if obs != "ok:list_dir" {
 		t.Errorf("obs = %q", obs)
+	}
+}
+
+func TestListDir_EmptyPathListsRoots(t *testing.T) {
+	dir := t.TempDir()
+	extra := filepath.Join(dir, "code")
+	if err := os.MkdirAll(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a marker file so a real listing is distinguishable.
+	if err := os.WriteFile(filepath.Join(extra, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, err := NewSandbox([]string{dir, extra}, 64*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := &listDirTool{sb: sb}
+
+	// Empty path → root catalog (models often omit path after --agent-root).
+	obs, err := tool.Exec(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("empty path: %v", err)
+	}
+	if !strings.Contains(obs, "Available agent roots") {
+		t.Errorf("expected roots catalog, got:\n%s", obs)
+	}
+	if !strings.Contains(obs, extra) {
+		t.Errorf("expected extra root %q in catalog:\n%s", extra, obs)
+	}
+
+	// Explicit root path → directory listing.
+	obs2, err := tool.Exec(context.Background(), map[string]any{"path": extra})
+	if err != nil {
+		t.Fatalf("list extra: %v", err)
+	}
+	if !strings.Contains(obs2, "main.go") {
+		t.Errorf("expected main.go in listing:\n%s", obs2)
 	}
 }

@@ -17,6 +17,72 @@ import (
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
+func TestBuildSystemPrompt_IncludesAgentRoots(t *testing.T) {
+	dir := t.TempDir()
+	// Minimal wiki layout for Manager paths.
+	for _, sub := range []string{"wiki", "raw"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mgr := wiki.NewManager(dir, nil, nil)
+	if err := mgr.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	codeRoot := filepath.Join(dir, "somecode")
+	if err := os.MkdirAll(codeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tools.NewRegistry()
+	tools.RegisterKnowledgeTools(reg, mgr)
+	descs := buildRootDescriptors(mgr, []string{codeRoot})
+	sys := buildSystemPrompt(reg, descs)
+
+	if !strings.Contains(sys, "Filesystem roots you MAY read") {
+		t.Error("system prompt missing roots section")
+	}
+	absCode, _ := filepath.Abs(codeRoot)
+	if !strings.Contains(sys, absCode) && !strings.Contains(sys, codeRoot) {
+		t.Errorf("system prompt should list --agent-root path %q:\n%s", codeRoot, sys)
+	}
+	if !strings.Contains(sys, "--agent-root") {
+		t.Error("system prompt should mention --agent-root role label")
+	}
+	// Concrete example of list_dir usage with a path should appear in tools or rules.
+	if !strings.Contains(sys, "list_dir") {
+		t.Error("expected list_dir in tools section")
+	}
+
+	// P0 exploration guidance: term bridging + anti-premature-give-up.
+	for _, want := range []string{
+		"Term bridging",
+		"GMP",
+		"wiki_index",
+		"Forbidden",
+		"synonym",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("system prompt missing exploration guidance %q", want)
+		}
+	}
+}
+
+func TestBuildMessages_EmptySearchHint(t *testing.T) {
+	msgs := buildMessages("sys", "gmp调度是怎么回事", nil)
+	if len(msgs) != 2 {
+		t.Fatalf("len=%d", len(msgs))
+	}
+	if !strings.Contains(msgs[1].Content, "expand synonyms") {
+		t.Errorf("user turn should remind empty-search ladder:\n%s", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "gmp调度") {
+		t.Error("question missing from user message")
+	}
+}
+
 func TestParseDecision(t *testing.T) {
 	raw := `{"thought":"search wiki","action":"wiki_search","args":{"query":"GC"}}`
 	d, err := parseDecision(raw)
@@ -228,10 +294,19 @@ func TestExplorerRun(t *testing.T) {
 		`{"thought":"done","final_answer":"Go has a concurrent GC.","references":[{"title":"GC","path":"wiki/concepts/GC.md","layer":"wiki"}]}`,
 	}}
 
+	var seen []Step
+	var progress []Progress
 	ex := NewExplorer(mgr, llmStub, config.LLMConfig{Temperature: 0.1})
 	result, err := ex.Run(context.Background(), "What about GC?", &Options{
-		MaxSteps: 5,
-		WallTime: 10 * time.Second,
+		MaxSteps:       5,
+		WallTime:       10 * time.Second,
+		CollectPrompts: true,
+		OnStep: func(s Step) {
+			seen = append(seen, s)
+		},
+		OnProgress: func(p Progress) {
+			progress = append(progress, p)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -241,5 +316,61 @@ func TestExplorerRun(t *testing.T) {
 	}
 	if len(result.Steps) < 2 {
 		t.Errorf("expected >=2 steps, got %d", len(result.Steps))
+	}
+
+	// Live UI: decide progress always; tool progress when an action runs.
+	if len(progress) < 2 {
+		t.Fatalf("OnProgress called %d times, want >=2 (decide + tool)", len(progress))
+	}
+	if progress[0].Phase != ProgressDecide {
+		t.Errorf("first progress phase=%q, want decide", progress[0].Phase)
+	}
+	var sawTool bool
+	for _, p := range progress {
+		if p.Phase == ProgressTool && p.Action == "wiki_search" {
+			sawTool = true
+		}
+	}
+	if !sawTool {
+		t.Errorf("expected ProgressTool for wiki_search, got %#v", progress)
+	}
+
+	// Observability: first step should expose thought/action/observation + prompts.
+	if len(seen) < 2 {
+		t.Fatalf("OnStep called %d times, want >=2", len(seen))
+	}
+	toolStep := seen[0]
+	if toolStep.Thought != "search" {
+		t.Errorf("tool step thought=%q", toolStep.Thought)
+	}
+	if toolStep.Action != "wiki_search" {
+		t.Errorf("tool step action=%q", toolStep.Action)
+	}
+	if toolStep.ObsBytes == 0 && toolStep.Observation == "" {
+		t.Error("tool step should carry observation")
+	}
+	if toolStep.SystemPrompt == "" {
+		t.Error("CollectPrompts: expected SystemPrompt on first step")
+	}
+	if toolStep.UserPrompt == "" || !strings.Contains(toolStep.UserPrompt, "What about GC?") {
+		t.Errorf("CollectPrompts: UserPrompt missing question: %q", toolStep.UserPrompt)
+	}
+	if toolStep.LLMRaw == "" || !strings.Contains(toolStep.LLMRaw, "wiki_search") {
+		t.Errorf("CollectPrompts: LLMRaw missing action: %q", toolStep.LLMRaw)
+	}
+
+	finalStep := seen[len(seen)-1]
+	if !finalStep.Final {
+		t.Error("last step should be final")
+	}
+	if finalStep.FinalAnswer == "" {
+		t.Error("final step should include FinalAnswer")
+	}
+	// System prompt only attached on first decide call to avoid huge logs.
+	if finalStep.SystemPrompt != "" {
+		t.Error("SystemPrompt should only be set on first step")
+	}
+	if finalStep.UserPrompt == "" {
+		t.Error("CollectPrompts: expected UserPrompt on later steps too")
 	}
 }

@@ -4,7 +4,8 @@
 > 结论：**内嵌 ReAct**；读 wiki/raw/源文件是一等工具；代码侧默认 **rg/grep + tree-sitter**（多语言、零 LSP）；gopls/LSP 为可选增强。
 > 最后更新：2026-08-04
 >
-> 依赖：[108-dual-truth-and-layered-retrieval.md](108-dual-truth-and-layered-retrieval.md)
+> 依赖：[108-dual-truth-and-layered-retrieval.md](108-dual-truth-and-layered-retrieval.md)  
+> 呈现层：[111-agent-step-presentation.md](111-agent-step-presentation.md)（紧凑 CLI → 可选 TUI → Web）
 
 ---
 
@@ -108,6 +109,7 @@ loop until budget exhausted or done:
 - **强制 JSON / tool-call schema**（不要靠自由文本解析 “Action:”）  
 - **默认只读**；`--save` 才写 synthesis  
 - **每步 trace**（复用 `-v` span）：tool 名、路径、耗时、observation 字节数  
+- **CLI 可观测性（默认开）**：每步实时打印 `Thought → Action(+args) → Observation`，便于判断 agent 在干什么、哪里跑偏；`-v` 额外打印 decide 轮的 system/user prompt 与 raw LLM response（`Options.CollectPrompts`）  
 - System prompt 写清：先 L1 wiki，不足再 raw；实现以源码为准；tree-sitter/rg 为句法/词法线索，非类型保证
 
 伪代码量级（便于评估工作量）：
@@ -129,8 +131,14 @@ for step := 0; step < maxSteps; step++ {
 #### A. Knowledge（Wiki + Raw）
 
 > **Agent 工具 ≠ 单轮 ask 管线。** Agent 自己做多步决策，工具应是廉价导航原语。
-> 默认策略：`wiki_index`（目录）→ `wiki_read` 下钻；需要关键词时用 `wiki_search`（**仅 FTS/BM25**，无 embedding / 无 query expansion / 无 MMR）。
+> 默认策略：`wiki_index`（目录，**先无 filter**）→ **术语桥接** 后 `wiki_read` 近义标题 → 需要字面命中时用 `wiki_search`（**仅 FTS/BM25**，无 embedding / 无 query expansion / 无 MMR）。
 > Hybrid Search + effort 只属于非 agent 的 `ask` 路径。
+>
+> **System prompt（P0）**（`buildSystemPrompt`）强制：
+> 1. 注入 **filesystem roots 绝对路径**（含 `--agent-root`）；`list_dir` 空 path 可再列 roots  
+> 2. **Term bridging**：缩写/中英/同义（如 GMP → 运行时调度 / scheduler）  
+> 3. FTS/filter 空 ≠ 主题不存在；禁止仅凭字面空结果 `final_answer`  
+> 4. 失败梯子：去 filter → 改写 query → 读近标题 → raw → list_dir+file_grep 代码根
 
 | Tool | 作用 | 实现 |
 |------|------|------|
@@ -509,6 +517,7 @@ ruminate ask --agent "Reconcile 会不会阻塞？"
 ## 十、参考
 
 - [108-dual-truth-and-layered-retrieval.md](108-dual-truth-and-layered-retrieval.md)
+- [111-agent-step-presentation.md](111-agent-step-presentation.md) — agent 执行过程呈现（Phase A 紧凑 CLI）
 - [105-iterative-retrieval.md](105-iterative-retrieval.md)
 - [106-small-to-big-retrieval.md](106-small-to-big-retrieval.md)
 - [100-ingest-lint-separation.md](100-ingest-lint-separation.md)

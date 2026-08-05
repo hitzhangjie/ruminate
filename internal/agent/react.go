@@ -30,12 +30,44 @@ type Options struct {
 	// Roots are filesystem roots the agent may read (wiki, raw, code).
 	// If empty, wiki root (wiki/ + raw/) is used.
 	Roots []string
-	// OnStep is an optional callback after each step (for CLI progress).
+	// OnStep is an optional callback after each step completes (for CLI / UI).
 	OnStep func(step Step)
+	// OnProgress is an optional callback for in-flight phases (decide / tool).
+	// Used by live terminal UIs for spinners; safe to leave nil.
+	OnProgress func(p Progress)
+	// CollectPrompts attaches SystemPrompt / UserPrompt / LLMRaw to each Step
+	// so callers can show full decide-round observability (e.g. CLI -v).
+	// Slightly more memory per step; default false.
+	CollectPrompts bool
+	// ObservationLimit is max chars kept on Step.Observation for UI/trace.
+	// Full tool output still goes into the LLM transcript. 0 = default (8KiB).
+	ObservationLimit int
+}
+
+// ProgressPhase is an in-flight agent activity (before a Step is complete).
+type ProgressPhase string
+
+const (
+	// ProgressDecide: LLM is choosing the next action / final answer.
+	ProgressDecide ProgressPhase = "decide"
+	// ProgressTool: a tool is executing after a decision was parsed.
+	ProgressTool ProgressPhase = "tool"
+)
+
+// Progress is a mid-step status event for live UIs (spinner / status line).
+type Progress struct {
+	Phase  ProgressPhase
+	Step   int // 1-based step index currently in flight
+	Action string
+	Args   map[string]any
 }
 
 const DefaultMaxSteps = 64
 const DefaultMaxWallTime = 10 * time.Minute
+
+// defaultStepObservationLimit is how much tool output is retained on Step for display.
+// Full observations remain in the transcript fed back to the LLM.
+const defaultStepObservationLimit = 8 * 1024
 
 // defaultOptions returns Options populated with sensible defaults.
 var defaultOptions = Options{
@@ -51,8 +83,12 @@ type Step struct {
 	Action      string
 	Args        map[string]any
 	Observation string
-	Duration    time.Duration
-	Final       bool
+	// ObsBytes is the full observation size before truncation for Step.Observation.
+	ObsBytes int
+	Duration time.Duration
+	Final    bool
+	// FinalAnswer is set when Final is true (the model’s answer text).
+	FinalAnswer string
 	// PromptTokens / CompletionTokens for the LLM decide call this step.
 	// Zero when the provider omits usage (some local backends).
 	PromptTokens     int
@@ -63,6 +99,15 @@ type Step struct {
 	// ParseDumpPath is set on parse_error steps: absolute path to the dumped
 	// raw LLM response for offline investigation.
 	ParseDumpPath string
+
+	// --- Optional decide-round detail (populated when Options.CollectPrompts) ---
+
+	// SystemPrompt is the system message for this decide call (usually only on step 1).
+	SystemPrompt string
+	// UserPrompt is the user message (question + transcript + decide instruction).
+	UserPrompt string
+	// LLMRaw is the raw model response content before JSON parse.
+	LLMRaw string
 }
 
 // Result is the agent answer.
@@ -126,17 +171,32 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		if oo.WallTime < opts.WallTime {
 			oo.WallTime = opts.WallTime
 		}
+		oo.CollectPrompts = opts.CollectPrompts
+		if opts.ObservationLimit > 0 {
+			oo.ObservationLimit = opts.ObservationLimit
+		}
+	}
+	obsLimit := oo.ObservationLimit
+	if obsLimit <= 0 {
+		obsLimit = defaultStepObservationLimit
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, oo.WallTime)
 	defer cancel()
 
-	// Always include wiki, raw, and root directories so the agent can
-	// read its own knowledge base. Caller-provided Roots are additional.
-	roots := append(
-		[]string{e.wiki.WikiDir(), e.wiki.RawDir(), e.wiki.Root()},
-		opts.Roots...,
-	)
+	// Always include wiki, raw, and workspace root so the agent can read its
+	// knowledge base. Caller-provided Roots (--agent-root) are additional.
+	// Labels are injected into the system prompt so the model knows concrete
+	// paths (sandbox alone is not enough — the LLM never saw them before).
+	var extraRoots []string
+	if opts != nil {
+		extraRoots = opts.Roots
+	}
+	rootDescs := buildRootDescriptors(e.wiki, extraRoots)
+	roots := make([]string, len(rootDescs))
+	for i, d := range rootDescs {
+		roots[i] = d.Path
+	}
 	sb, err := tools.NewSandbox(roots, oo.MaxReadBytes)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: %w", err)
@@ -157,7 +217,18 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 	var totalPrompt, totalCompletion, totalPromptChars int
 	consecutiveParseErrors := 0
 	const maxConsecutiveParseErrors = 2
-	sys := buildSystemPrompt(reg)
+	sys := buildSystemPrompt(reg, rootDescs)
+	emitStep := func(st Step) {
+		steps = append(steps, st)
+		if opts != nil && opts.OnStep != nil {
+			opts.OnStep(st)
+		}
+	}
+	emitProgress := func(p Progress) {
+		if opts != nil && opts.OnProgress != nil {
+			opts.OnProgress(p)
+		}
+	}
 
 	for step := 0; step < oo.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
@@ -178,6 +249,7 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		}
 
 		start := time.Now()
+		emitProgress(Progress{Phase: ProgressDecide, Step: step + 1})
 		resp, err := e.llmProvider.Chat(ctx, messages, &llm.ChatOptions{
 			Temperature: e.llmCfg.Temperature,
 		})
@@ -192,6 +264,25 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		totalPrompt += pt
 		totalCompletion += ct
 		totalPromptChars += promptChars
+
+		// Base fields shared by every step variant this iteration.
+		base := Step{
+			Index:            step + 1,
+			Duration:         time.Since(start),
+			PromptTokens:     pt,
+			CompletionTokens: ct,
+			PromptChars:      promptChars,
+		}
+		if oo.CollectPrompts {
+			// System prompt is large (tool schema); attach only on first decide call.
+			if step == 0 {
+				base.SystemPrompt = sys
+			}
+			if len(messages) > 1 {
+				base.UserPrompt = messages[len(messages)-1].Content
+			}
+			base.LLMRaw = resp.Content
+		}
 
 		dec, err := parseDecision(resp.Content)
 		if err != nil {
@@ -212,15 +303,14 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 				obs = fmt.Sprintf("ERROR: could not parse decision JSON: %v\n(dump failed: %v)\nRaw:\n%s\nRespond with valid JSON only.", err, dumpErr, truncate(resp.Content, 800))
 			}
 			transcript = append(transcript, formatTurn("(parse_error)", "none", nil, obs))
-			st := Step{
-				Index: step + 1, Thought: "parse_error", Observation: obs, Duration: time.Since(start),
-				PromptTokens: pt, CompletionTokens: ct, PromptChars: promptChars,
-				ParseDumpPath: dumpPath,
-			}
-			steps = append(steps, st)
-			if opts != nil && opts.OnStep != nil {
-				opts.OnStep(st)
-			}
+			st := base
+			st.Thought = "parse_error"
+			st.Observation = truncate(obs, obsLimit)
+			st.ObsBytes = len(obs)
+			st.ParseDumpPath = dumpPath
+			// Duration was snapped before parse work; refresh.
+			st.Duration = time.Since(start)
+			emitStep(st)
 			if e.tracer != nil {
 				attrs := []any{"parse_error", true, "prompt_tok", pt, "completion_tok", ct}
 				if dumpPath != "" {
@@ -245,14 +335,12 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 
 		// Final answer?
 		if strings.TrimSpace(dec.FinalAnswer) != "" {
-			st := Step{
-				Index: step + 1, Thought: dec.Thought, Final: true, Duration: time.Since(start),
-				PromptTokens: pt, CompletionTokens: ct, PromptChars: promptChars,
-			}
-			steps = append(steps, st)
-			if opts != nil && opts.OnStep != nil {
-				opts.OnStep(st)
-			}
+			st := base
+			st.Thought = dec.Thought
+			st.Final = true
+			st.FinalAnswer = dec.FinalAnswer
+			st.Duration = time.Since(start)
+			emitStep(st)
 			if e.tracer != nil {
 				e.tracer.End("final", true, "answer_chars", len(dec.FinalAnswer),
 					"prompt_tok", pt, "completion_tok", ct)
@@ -270,14 +358,12 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		if dec.Action == "" {
 			obs := "ERROR: no action and no final_answer. Provide one or the other."
 			transcript = append(transcript, formatTurn(dec.Thought, "", nil, obs))
-			st := Step{
-				Index: step + 1, Thought: dec.Thought, Observation: obs, Duration: time.Since(start),
-				PromptTokens: pt, CompletionTokens: ct, PromptChars: promptChars,
-			}
-			steps = append(steps, st)
-			if opts != nil && opts.OnStep != nil {
-				opts.OnStep(st)
-			}
+			st := base
+			st.Thought = dec.Thought
+			st.Observation = truncate(obs, obsLimit)
+			st.ObsBytes = len(obs)
+			st.Duration = time.Since(start)
+			emitStep(st)
 			if e.tracer != nil {
 				e.tracer.End("missing_action", true)
 			}
@@ -294,6 +380,12 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 		if e.tracer != nil {
 			e.tracer.Begin("tool", "name", dec.Action, "arg", traceArgSummary(dec.Action, dec.Args))
 		}
+		emitProgress(Progress{
+			Phase:  ProgressTool,
+			Step:   step + 1,
+			Action: dec.Action,
+			Args:   dec.Args,
+		})
 		obs, execErr := reg.Exec(ctx, dec.Action, dec.Args, oo.MaxReadBytes)
 		if execErr != nil {
 			obs = fmt.Sprintf("ERROR: %v", execErr)
@@ -304,21 +396,14 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 
 		turn := formatTurn(dec.Thought, dec.Action, dec.Args, obs)
 		transcript = append(transcript, turn)
-		st := Step{
-			Index:            step + 1,
-			Thought:          dec.Thought,
-			Action:           dec.Action,
-			Args:             dec.Args,
-			Observation:      truncate(obs, 500),
-			Duration:         time.Since(start),
-			PromptTokens:     pt,
-			CompletionTokens: ct,
-			PromptChars:      promptChars,
-		}
-		steps = append(steps, st)
-		if opts != nil && opts.OnStep != nil {
-			opts.OnStep(st)
-		}
+		st := base
+		st.Thought = dec.Thought
+		st.Action = dec.Action
+		st.Args = dec.Args
+		st.Observation = truncate(obs, obsLimit)
+		st.ObsBytes = len(obs)
+		st.Duration = time.Since(start)
+		emitStep(st)
 		if e.tracer != nil {
 			e.tracer.End("action", dec.Action, "obs_bytes", len(obs),
 				"prompt_tok", pt, "completion_tok", ct, "prompt_chars", promptChars)
@@ -337,30 +422,115 @@ func (e *Explorer) Run(ctx context.Context, question string, opts *Options) (*Re
 	}, nil
 }
 
-func buildSystemPrompt(reg *tools.Registry) string {
+// rootDescriptor is one filesystem root the agent may read, with a human label
+// for the system prompt (wiki / raw / workspace / --agent-root).
+type rootDescriptor struct {
+	Path  string
+	Label string
+}
+
+// buildRootDescriptors lists sandbox roots in a stable order with labels.
+// extra comes from Options.Roots / CLI --agent-root.
+func buildRootDescriptors(mgr *wiki.Manager, extra []string) []rootDescriptor {
+	out := []rootDescriptor{
+		{Path: mgr.WikiDir(), Label: "wiki (synthesis Markdown pages)"},
+		{Path: mgr.RawDir(), Label: "raw (evidence originals)"},
+		{Path: mgr.Root(), Label: "wiki workspace root (index.md, raw/, wiki/, …)"},
+	}
+	seen := map[string]bool{}
+	for _, d := range out {
+		if a, err := filepath.Abs(d.Path); err == nil {
+			seen[filepath.Clean(a)] = true
+		}
+	}
+	for _, r := range extra {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			abs = r
+		}
+		abs = filepath.Clean(abs)
+		if seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		out = append(out, rootDescriptor{
+			Path:  abs,
+			Label: "extra root (--agent-root): explore with list_dir / file_grep / file_read",
+		})
+	}
+	return out
+}
+
+func formatRootsForPrompt(roots []rootDescriptor) string {
+	if len(roots) == 0 {
+		return "(no filesystem roots configured)"
+	}
+	var b strings.Builder
+	for i, d := range roots {
+		fmt.Fprintf(&b, "%d. `%s`\n   role: %s\n", i+1, d.Path, d.Label)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func buildSystemPrompt(reg *tools.Registry, roots []rootDescriptor) string {
 	return fmt.Sprintf(`You are Ruminate's exploration agent. You answer questions by gathering evidence with tools (ReAct).
 
 ## Dual truth
 - **Wiki (Synthesis)**: compiled understanding — navigate the catalog, then open pages.
 - **Raw (Evidence)**: archived originals — use when wiki is thin, contradictory, or the user needs precise quotes (raw_list_sources → raw_read / raw_search).
-- **External files**: under configured agent roots — code, prose, Markdown notes, etc. list_dir first, then file_grep / file_read. Use code tools (symbol_search, read_enclosing, ast_outline) only after you confirm Go (or other) source is present.
+- **External / code roots**: absolute paths listed below (includes CLI --agent-root). list_dir first (pass the root path), then file_grep / file_read. Use code tools (symbol_search, read_enclosing, ast_outline) only after you confirm source files are present.
 
-## Exploration strategy (wiki)
-You are an explorer, NOT a single-shot RAG pipeline. Prefer precise drill-down over dumping many candidates into context:
-1. **wiki_index** first (optionally with filter) — catalog of titles/paths/summaries. This is the table of contents.
-2. **wiki_read** promising pages from the index.
-3. **wiki_search** only when you need keyword/BM25 lookup (cheap FTS; no embeddings). Do not treat it as a full ask pipeline.
-4. Escalate to raw_* or external roots only when wiki is insufficient.
+## Filesystem roots you MAY read (sandbox allow-list)
+These are the only directories file tools can access. **Always use one of these absolute paths** (or a subpath under them) for list_dir / file_read / file_grep / code tools.
+list_dir with empty path or path="." returns this list again.
+
+%s
+
+## Exploration strategy
+You are an explorer, NOT a single-shot RAG pipeline. Prefer precise drill-down over dumping many candidates into context.
+
+### Default ladder (follow in order; skip only when already enough evidence)
+1. **wiki_index** — start with **no filter** (or a broad category word), not the user's exact jargon. Catalog = titles/paths/one-line summaries.
+2. In **thought**, name 1–3 promising catalog lines (titles may use different words than the user). Then **wiki_read** those pages.
+3. **wiki_search** only for keyword/BM25 lookup (cheap FTS; **no embeddings, no semantic expansion**). Treat empty FTS as "literal miss", not "topic absent".
+4. If wiki is thin: **raw_list_sources** / **raw_search** / **raw_read**.
+5. If still thin and extra roots exist: **list_dir** on the extra root absolute path → **file_grep** synonym patterns → **file_read** / **read_enclosing**.
+
+### Term bridging (CRITICAL — user wording ≠ wiki titles)
+Users often use acronyms, English, or slang; wiki titles use other phrasings. **Before** concluding "not in wiki", expand the question:
+
+1. **Expand acronyms / jargon** in thought (examples, not exhaustive):
+   - GMP → Go scheduler / Goroutine·Machine·Processor / runtime scheduling / 运行时调度 / goroutine 调度
+   - GC → garbage collection / 垃圾回收 / write barrier / 写屏障 / concurrent mark
+   - THP → transparent huge pages / 透明巨页 / 大页
+   - RAG → retrieval / embedding / 检索 / 向量
+2. **Bilingual + synonym queries**: try Chinese AND English forms (调度↔scheduler, 运行时↔runtime, 并发↔concurrency).
+3. **Prefer opening near titles** over more empty searches: if the catalog shows anything about runtime / 调度 / scheduler / goroutine / 内存 / GC when the user asked about GMP/scheduling, **wiki_read it** even if the title does not contain "GMP".
+4. After **wiki_index**, jot candidate titles in thought immediately (observations may be compacted later).
+
+### When search / filter returns empty (do NOT give up)
+After **one** empty result, change strategy — never repeat the same query/filter:
+1. Drop filter → full **wiki_index** (or broader stem: 调度, runtime, memory, network…).
+2. **wiki_search** with paraphrases from the term-bridge list (not the original string only).
+3. **wiki_read** any plausible catalog hit from prior steps.
+4. Escalate: raw_* then **list_dir + file_grep** on --agent-root paths with the same synonym set.
+5. Only after this ladder may you say evidence is insufficient — and list what you tried (queries, paths).
+
+**Forbidden**: final_answer claiming the wiki has nothing on the topic solely because wiki_search/filter for the user's exact words returned empty, while you never opened a near-title page or searched synonyms / agent-root.
 
 ## Rules
-0. When exploring a new root or directory, always list_dir first. Choose tools based on what you see.
-1. Prefer L1 wiki first; escalate to raw/external files only when needed.
-2. Default is READ-ONLY. Never invent tool observations — only use what tools return.
-3. symbol_search / tree-sitter-style results may have multiple candidates; do not pretend uniqueness.
-4. When evidence is insufficient, say so in final_answer.
+0. Filesystem: list_dir with a root absolute path from the list above (empty path only to re-list roots). path is required for a real directory listing once you know the path.
+1. Prefer L1 wiki first; escalate to raw/external only when needed — but do escalate when wiki literal search fails.
+2. READ-ONLY. Never invent tool observations — only use what tools return.
+3. symbol_search / multi-candidate code results: do not pretend uniqueness.
+4. When evidence is still insufficient after the ladder, say so honestly and cite attempts.
 5. Cite paths and wiki titles in the answer.
-6. If a search returns no results, vary: different keywords, wiki_index filter, read promising files, drill subdirs. Do not retry the same empty search.
-7. Keep context lean: open only the pages you need; summarize mentally and answer as soon as evidence is enough.
+6. Keep context lean: open pages you need; answer when evidence is enough — not before the ladder is exhausted on hard questions.
+7. Do not retry the identical empty wiki_search / wiki_index filter.
 
 ## Response format (STRICT JSON only — no markdown fences, no prose outside JSON)
 
@@ -378,7 +548,7 @@ Or finish:
 
 ## Available tools
 %s
-`, reg.SchemaJSON())
+`, formatRootsForPrompt(roots), reg.SchemaJSON())
 }
 
 // transcriptKeepFull is how many recent steps keep full observations in the
@@ -408,7 +578,8 @@ func buildMessages(sys, question string, transcript []string) []llm.Message {
 			fmt.Fprintf(&b, "### Step %d\n%s\n\n", i+1, body)
 		}
 	}
-	b.WriteString("Decide the next action or provide final_answer as JSON.")
+	b.WriteString("Decide the next action or provide final_answer as JSON.\n")
+	b.WriteString("If recent wiki_search/filter results were empty: expand synonyms/acronyms, drop filters, wiki_read near titles, or list_dir+file_grep on agent-root — do not final_answer \"not found\" on literal misses alone.")
 	return []llm.Message{
 		{Role: "system", Content: sys},
 		{Role: "user", Content: b.String()},

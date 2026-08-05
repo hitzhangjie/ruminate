@@ -246,32 +246,44 @@ type listDirTool struct {
 
 func (t *listDirTool) Schema() Schema {
 	return Schema{
-		Name:        "list_dir",
-		Description: "List a directory under agent roots (shallow, limited entries).",
+		Name: "list_dir",
+		Description: "List a directory under agent roots (shallow, limited entries). " +
+			"Pass an absolute root path from the system prompt (or a subpath). " +
+			"Omit path (or use \".\" / \"\") to list available agent roots — use this when unsure which paths are allowed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":  map[string]any{"type": "string"},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Absolute path under an agent root, or relative to a root. Empty/\".\" lists roots.",
+				},
 				"limit": map[string]any{"type": "integer", "description": "Max entries (default 50)"},
 			},
-			"required": []string{"path"},
+			// path is optional: empty → list roots (models often omit it otherwise).
 		},
 	}
 }
 
 func (t *listDirTool) Exec(ctx context.Context, args map[string]any) (string, error) {
-	path := argString(args, "path")
+	path := strings.TrimSpace(argString(args, "path"))
+	// Empty / "." → catalog of roots so the model learns concrete paths
+	// (CLI --agent-root is otherwise only enforced by the sandbox, not discoverable).
+	if path == "" || path == "." {
+		return t.listRoots(), nil
+	}
 	abs, err := t.sb.Resolve(path)
 	if err != nil {
-		return "", err
+		// Help the model recover: include root list in the error observation path.
+		return "", fmt.Errorf("%w\n\n%s", err, t.listRoots())
 	}
+	// If path resolved to a file, show parent listing hint via ReadDir error.
 	limit := argInt(args, "limit", 50)
 	entries, err := os.ReadDir(abs)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w\n\n%s", err, t.listRoots())
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s/\n", t.sb.RelToRoot(abs))
+	fmt.Fprintf(&b, "%s/\n", abs)
 	n := 0
 	for _, e := range entries {
 		if n >= limit {
@@ -286,6 +298,23 @@ func (t *listDirTool) Exec(ctx context.Context, args map[string]any) (string, er
 		n++
 	}
 	return b.String(), nil
+}
+
+// listRoots formats the sandbox allow-list for list_dir with no path.
+func (t *listDirTool) listRoots() string {
+	var b strings.Builder
+	b.WriteString("Available agent roots (pass one as list_dir path, or use under file_grep/file_read):\n")
+	if len(t.sb.Roots) == 0 {
+		b.WriteString("  (none configured)\n")
+		return b.String()
+	}
+	for i, r := range t.sb.Roots {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, r)
+	}
+	b.WriteString("Example: {\"action\":\"list_dir\",\"args\":{\"path\":\"")
+	b.WriteString(t.sb.Roots[0])
+	b.WriteString("\"}}\n")
+	return b.String()
 }
 
 // RegisterFileTools registers file_read, file_grep, list_dir.

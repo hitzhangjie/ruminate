@@ -793,7 +793,7 @@ func (m *Manager) hybridSearch(ctx context.Context, query string, topN int, effo
 }
 
 // ftsWithFallback performs FTS5 AND search with CJK bigram expansion,
-// falling back to OR if AND returns nothing.
+// falling back to OR if AND returns nothing or errors (e.g. legacy bad query).
 func (m *Manager) ftsWithFallback(query string, topN int) ([]SearchResult, error) {
 	if m.tracer != nil {
 		m.tracer.Begin("search", "query", query, "topN", topN, "strategy", "fts")
@@ -801,31 +801,43 @@ func (m *Manager) ftsWithFallback(query string, topN int) ([]SearchResult, error
 	}
 
 	andQuery := toFTS5AndQuery(query)
+	if andQuery == "" {
+		andQuery = sanitizeFTS5Query(query)
+	}
 	results, err := m.index.searchWithSnippets(andQuery, topN)
+	if err == nil && len(results) > 0 {
+		if m.tracer != nil {
+			m.tracer.Begin("fts", "type", "AND")
+			m.tracer.End("results", len(results), "docs", docList(results[:min(5, len(results))]))
+		}
+		return results, nil
+	}
+
+	if m.tracer != nil {
+		m.tracer.Begin("fts", "type", "AND")
+		if err != nil {
+			m.tracer.Error(err)
+		}
+		m.tracer.End("results", 0)
+	}
+
+	orQuery := toFTS5OrQuery(query)
+	if orQuery != "" {
+		orResults, orErr := m.index.searchWithSnippets(orQuery, topN)
+		if orErr == nil {
+			if m.tracer != nil {
+				m.tracer.Begin("fts", "type", "OR")
+				m.tracer.End("results", len(orResults), "docs", docList(orResults[:min(5, len(orResults))]))
+			}
+			return orResults, nil
+		}
+		// Prefer the first meaningful error for diagnostics.
+		if err == nil {
+			err = orErr
+		}
+	}
 	if err != nil {
 		return nil, err
-	}
-	if len(results) == 0 {
-		if m.tracer != nil {
-			m.tracer.Begin("fts", "type", "AND")
-			m.tracer.End("results", 0)
-		}
-		orQuery := toFTS5OrQuery(query)
-		if orQuery != "" {
-			results, err = m.index.searchWithSnippets(orQuery, topN)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if m.tracer != nil {
-			m.tracer.Begin("fts", "type", "OR")
-			m.tracer.End("results", len(results), "docs", docList(results[:min(5, len(results))]))
-		}
-	} else {
-		if m.tracer != nil {
-			m.tracer.Begin("fts", "type", "AND")
-			m.tracer.End("results", len(results), "docs", docList(results[:min(5, len(results))]))
-		}
 	}
 	return results, nil
 }

@@ -37,7 +37,22 @@ func (e *Engine) Find(query string, opts *FindOptions) ([]FindResult, error) {
 		limit = opts.Limit
 	}
 
-	results, err := e.wiki.Index().SearchWithSnippets(query, limit)
+	// Rewrite NL queries into safe FTS5 (CJK bigrams + explicit AND). The
+	// public SearchWithSnippets API still accepts raw MATCH strings for callers
+	// that build their own query; Find is user-facing and must not surface
+	// fts5 syntax errors on ordinary Chinese/English phrases.
+	ftsQuery := wiki.ToFTS5AndQuery(query)
+	if ftsQuery == "" {
+		ftsQuery = query
+	}
+	results, err := e.wiki.Index().SearchWithSnippets(ftsQuery, limit)
+	if err != nil || len(results) == 0 {
+		if orQ := wiki.ToFTS5OrQuery(query); orQ != "" && orQ != ftsQuery {
+			if orResults, orErr := e.wiki.Index().SearchWithSnippets(orQ, limit); orErr == nil && len(orResults) > 0 {
+				results, err = orResults, nil
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

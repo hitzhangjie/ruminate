@@ -622,12 +622,24 @@ func TestToFTS5AndQuery(t *testing.T) {
 		{
 			name:  "simple words",
 			query: "hello world",
-			want:  `"hello" "world"`,
+			want:  `"hello" AND "world"`,
 		},
 		{
 			name:  "CJK expanded to bigrams",
 			query: "透明巨页 Go",
-			want:  `("透明" OR "明巨" OR "巨页") "Go"`,
+			want:  `("透明" OR "明巨" OR "巨页") AND "Go"`,
+		},
+		{
+			// Regression: space-joined AND after a parenthesized bigram group is
+			// invalid FTS5 ("syntax error near ""历史""").
+			name:  "CJK multi-term with spaces",
+			query: "分布式系统 历史 事件",
+			want:  `("分布" OR "布式" OR "式系" OR "系统") AND "历史" AND "事件"`,
+		},
+		{
+			name:  "CJK short terms each two chars",
+			query: "分布式 系统 历史",
+			want:  `("分布" OR "布式") AND "系统" AND "历史"`,
 		},
 	}
 
@@ -638,5 +650,74 @@ func TestToFTS5AndQuery(t *testing.T) {
 				t.Errorf("toFTS5AndQuery(%q) = %q, want %q", tt.query, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestToFTS5AndQuery_ValidFTS5Match(t *testing.T) {
+	// End-to-end: rewritten queries must be accepted by SQLite FTS5 MATCH.
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.md")
+	dbPath := filepath.Join(dir, "fts.db")
+	im := NewIndexManager(indexPath, dbPath)
+	if err := im.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer im.Close()
+
+	page := &Page{
+		Path:    "wiki/concepts/distributed.md",
+		Title:   "分布式系统",
+		Type:    PageTypeConcept,
+		Content: "分布式系统发展过程中的关键历史事件包括 ARPANET、MapReduce 等。",
+	}
+	if err := im.AddPage(page); err != nil {
+		t.Fatal(err)
+	}
+
+	queries := []string{
+		"分布式系统 历史 事件",
+		"分布式 系统 历史",
+		"透明巨页 Go GC", // may return 0 hits but must not error
+		`hello "world"`,  // embedded quote must not break MATCH
+	}
+	for _, q := range queries {
+		andQ := toFTS5AndQuery(q)
+		if andQ == "" {
+			t.Errorf("toFTS5AndQuery(%q) empty", q)
+			continue
+		}
+		_, err := im.SearchWithSnippets(andQ, 5)
+		if err != nil {
+			t.Errorf("SearchWithSnippets(and=%q) from %q: %v", andQ, q, err)
+		}
+	}
+
+	// Manager.SearchKeyword (wiki_search tool path) must not surface FTS syntax errors.
+	mgr := NewManager(dir, nil, nil)
+	if err := mgr.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	content := WithSources(
+		"# 分布式系统\n\n分布式系统发展过程中的关键历史事件。\n",
+		"分布式系统", PageTypeConcept, nil,
+	)
+	if _, err := mgr.Create("分布式系统", PageTypeConcept, content); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := mgr.SearchKeyword("分布式系统 历史 事件", 8)
+	if err != nil {
+		t.Fatalf("SearchKeyword Chinese multi-term: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("SearchKeyword expected at least one hit for Chinese multi-term query")
+	}
+}
+
+func TestFTS5Quote_EscapesInnerQuotes(t *testing.T) {
+	got := fts5Quote(`a"b`)
+	want := `"a""b"`
+	if got != want {
+		t.Errorf("fts5Quote = %q, want %q", got, want)
 	}
 }

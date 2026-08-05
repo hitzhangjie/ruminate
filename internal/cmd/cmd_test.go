@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/hitzhangjie/ruminate/internal/agent"
 	"github.com/hitzhangjie/ruminate/internal/lint"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
@@ -44,6 +47,214 @@ func TestParseEffort_Constants(t *testing.T) {
 	}
 	if wiki.SearchEffortThorough != "thorough" {
 		t.Errorf("SearchEffortThorough = %q, want 'thorough'", wiki.SearchEffortThorough)
+	}
+}
+
+// =============================================================================
+// writeAgentStep (ask.go) — ReAct observability output (docs/111 Phase A)
+// =============================================================================
+
+func TestWriteAgentStep_CompactToolTurn(t *testing.T) {
+	var buf strings.Builder
+	s := agent.Step{
+		Index:            1,
+		Thought:          "search the wiki for GC",
+		Action:           "wiki_search",
+		Args:             map[string]any{"query": "GC"},
+		Observation:      "found GC page with concurrent collector notes",
+		ObsBytes:         48,
+		Duration:         120 * time.Millisecond,
+		PromptTokens:     100,
+		CompletionTokens: 20,
+	}
+	writeAgentStep(&buf, s, false)
+	out := buf.String()
+	// One-line timeline: no multi-line Thought/Observation dump.
+	for _, want := range []string{
+		"✓ 1",
+		"wiki_search",
+		`"GC"`,
+		"120ms",
+		"48B",
+		"100→20 tok",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in compact output:\n%s", want, out)
+		}
+	}
+	for _, ban := range []string{
+		"Thought:",
+		"Observation",
+		"Decide prompt:",
+		"── Step",
+	} {
+		if strings.Contains(out, ban) {
+			t.Errorf("compact output should not contain %q:\n%s", ban, out)
+		}
+	}
+	// Single line (plus trailing newline).
+	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
+		t.Errorf("expected single line compact output, got:\n%s", out)
+	}
+}
+
+func TestWriteAgentStep_VerboseIncludesPrompts(t *testing.T) {
+	var buf strings.Builder
+	s := agent.Step{
+		Index:        1,
+		Thought:      "look around",
+		Action:       "wiki_index",
+		Args:         map[string]any{},
+		Observation:  "index.md …",
+		ObsBytes:     10,
+		Duration:     50 * time.Millisecond,
+		SystemPrompt: "You are Ruminate's exploration agent.",
+		UserPrompt:   "Question: What is GC?\n\nDecide the next action…",
+		LLMRaw:       `{"thought":"look around","action":"wiki_index","args":{}}`,
+	}
+	writeAgentStep(&buf, s, true)
+	out := buf.String()
+	for _, want := range []string{
+		"── Step 1 · tool",
+		"Decide prompt:",
+		"[system]",
+		"You are Ruminate's exploration agent.",
+		"[user]",
+		"Question: What is GC?",
+		"LLM response",
+		`"action":"wiki_index"`,
+		"Thought:",
+		"Action: wiki_index",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in verbose output:\n%s", want, out)
+		}
+	}
+}
+
+func TestWriteAgentStep_FinalAnswerCompact(t *testing.T) {
+	var buf strings.Builder
+	s := agent.Step{
+		Index:       3,
+		Thought:     "enough evidence",
+		Final:       true,
+		FinalAnswer: "Go has a concurrent GC.",
+		Duration:    80 * time.Millisecond,
+	}
+	writeAgentStep(&buf, s, false)
+	out := buf.String()
+	for _, want := range []string{
+		"→ 3",
+		"final_answer",
+		"80ms",
+		"enough evidence",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	// Full answer body stays on stdout after the run; compact must not dump it.
+	if strings.Contains(out, "Go has a concurrent GC.") {
+		t.Errorf("compact final step should not print full answer:\n%s", out)
+	}
+	if strings.Contains(out, "Thought:") {
+		t.Errorf("compact final should not use multi-line Thought block:\n%s", out)
+	}
+}
+
+func TestWriteAgentStep_FinalAnswerVerbose(t *testing.T) {
+	var buf strings.Builder
+	s := agent.Step{
+		Index:       3,
+		Thought:     "enough evidence",
+		Final:       true,
+		FinalAnswer: "Go has a concurrent GC.",
+		Duration:    80 * time.Millisecond,
+	}
+	writeAgentStep(&buf, s, true)
+	out := buf.String()
+	for _, want := range []string{
+		"Step 3 · final_answer",
+		"Thought:",
+		"enough evidence",
+		"Final answer",
+		"Go has a concurrent GC.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestWriteAgentStep_ParseErrorExpands(t *testing.T) {
+	var buf strings.Builder
+	s := agent.Step{
+		Index:         2,
+		Thought:       "parse_error",
+		Observation:   "ERROR: could not parse decision JSON: unexpected EOF",
+		ObsBytes:      50,
+		ParseDumpPath: "/tmp/wiki/db/debug/parse_errors/x.txt",
+		Duration:      10 * time.Millisecond,
+	}
+	writeAgentStep(&buf, s, false)
+	out := buf.String()
+	for _, want := range []string{
+		"── Step 2 · parse_error",
+		"unparseable JSON",
+		"dump: /tmp/wiki/db/debug/parse_errors/x.txt",
+		"Observation · ERROR",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestWriteAgentStep_ToolErrorExpands(t *testing.T) {
+	var buf strings.Builder
+	s := agent.Step{
+		Index:       4,
+		Thought:     "read the file",
+		Action:      "file_read",
+		Args:        map[string]any{"path": "missing.go"},
+		Observation: "ERROR: path outside sandbox roots",
+		ObsBytes:    34,
+		Duration:    5 * time.Millisecond,
+	}
+	writeAgentStep(&buf, s, false)
+	out := buf.String()
+	for _, want := range []string{
+		"── Step 4 · tool",
+		"Action: file_read",
+		"summary: missing.go",
+		"Observation · ERROR",
+		"path outside sandbox",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	// Non-verbose error expand still should not dump decide prompts.
+	if strings.Contains(out, "Decide prompt:") {
+		t.Error("error expand without -v should not print Decide prompt")
+	}
+}
+
+func TestTruncateOneLine(t *testing.T) {
+	if got := truncateOneLine("  a   b\nc  ", 100); got != "a b c" {
+		t.Errorf("collapse whitespace: got %q", got)
+	}
+	if got := truncateOneLine("hello world", 8); got != "hello w…" {
+		t.Errorf("truncate: got %q", got)
+	}
+	// Long paths keep the basename (suffix), not the prefix.
+	path := "/Users/zhangjie/hitzhangjie/project/internal/runtime/proc.go"
+	got := truncateOneLine(path, 24)
+	if !strings.HasSuffix(got, "proc.go") {
+		t.Errorf("path should keep basename, got %q", got)
+	}
+	if !strings.HasPrefix(got, "…") {
+		t.Errorf("path should lead with ellipsis, got %q", got)
 	}
 }
 

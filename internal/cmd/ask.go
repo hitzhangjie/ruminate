@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/hitzhangjie/ruminate/internal/agent"
 	"github.com/hitzhangjie/ruminate/internal/query"
 	"github.com/hitzhangjie/ruminate/internal/trace"
+	"github.com/hitzhangjie/ruminate/internal/ui/agentview"
 	"github.com/hitzhangjie/ruminate/internal/wiki"
 )
 
@@ -39,14 +42,20 @@ The ask pipeline (default):
   4. Stream the synthesized answer (or --no-stream)
   5. Answer includes references in [[page]] notation
 
-Agent mode (--agent): multi-step ReAct exploration (docs/109).
+Agent mode (--agent): multi-step ReAct exploration (docs/109, docs/111).
   Uses tools: wiki_*, raw_*, file_grep/read, symbol_search, read_enclosing.
   Default read-only; code intelligence is syntactic (go/ast), not gopls.
+
+  On a TTY, progress uses a Claude Code–style live view (spinner + step cards).
+  Non-TTY / pipes use a compact one-line timeline. Failed steps surface errors.
+  With -v/--verbose, prints full Thought → Action → Observation plus
+  decide-round prompts and raw LLM response (docs/111).
 
 Examples:
   ruminate ask "What is RAG?"
   ruminate ask --evidence auto "原文默认超时是多少？"
   ruminate ask --agent "Reconcile 会不会阻塞？"
+  ruminate ask --agent -v "…"   # full prompt + thought + action + observation
   ruminate ask --agent --agent-root /path/to/code "Where is Hello defined?"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -126,52 +135,44 @@ func parseEffort(s string) wiki.SearchEffort {
 	}
 }
 
+// Agent step display caps (bytes/runes via char count; UTF-8 safe enough for preview).
+const (
+	// Compact summary: max runes for action detail on one line (non-TTY).
+	// Paths use suffix-preserving shorten (see truncateOneLine).
+	agentCompactDetailMax = 96
+	// Error expand (non-verbose): short observation preview.
+	agentObsPreviewError = 800
+	// Detailed non-verbose expand (unused for full dump; keep for final preview).
+	agentObsPreviewDefault = 1500
+	// -v: longer observation, plus decide prompts / raw LLM response.
+	agentObsPreviewVerbose = 8000
+	agentPromptPreview     = 6000
+	agentLLMRawPreview     = 3000
+)
+
 // runAgent runs the embedded ReAct explorer via the query engine.
 func runAgent(ctx context.Context, engine *query.Engine, question string) error {
 	fmt.Printf("Agent exploring: %s\n\n", question)
 
 	verbose := engine.Tracer().Enabled()
 	opts := &agent.Options{
-		MaxSteps: askMaxSteps,
-		WallTime: 120 * time.Second,
-		Roots:    askAgentRoot,
-		OnStep: func(s agent.Step) {
-			tok := formatStepTokens(s)
-			if s.Final {
-				fmt.Fprintf(os.Stderr, "  [step %d] final_answer (%s%s)\n",
-					s.Index, s.Duration.Round(time.Millisecond), tok)
-				return
-			}
-			if s.Thought == "parse_error" {
-				if s.ParseDumpPath != "" {
-					fmt.Fprintf(os.Stderr, "  [step %d] parse_error (%s%s) → dumped to %s\n",
-						s.Index, s.Duration.Round(time.Millisecond), tok, s.ParseDumpPath)
-				} else {
-					fmt.Fprintf(os.Stderr, "  [step %d] parse_error (%s%s)\n",
-						s.Index, s.Duration.Round(time.Millisecond), tok)
-				}
-				return
-			}
-			fail := ""
-			if strings.HasPrefix(s.Observation, "ERROR:") {
-				// Surface tool failures so unknown-tool thrashing is obvious.
-				msg := strings.TrimSpace(strings.TrimPrefix(s.Observation, "ERROR:"))
-				if len(msg) > 120 {
-					msg = msg[:120] + "…"
-				}
-				fail = " FAILED: " + msg
-			}
-			if verbose {
-				detail := formatActionDetail(s.Action, s.Args)
-				if detail != "" {
-					fmt.Fprintf(os.Stderr, "  [step %d] %s %s (%s%s)%s\n",
-						s.Index, s.Action, detail, s.Duration.Round(time.Millisecond), tok, fail)
-					return
-				}
-			}
-			fmt.Fprintf(os.Stderr, "  [step %d] %s (%s%s)%s\n",
-				s.Index, s.Action, s.Duration.Round(time.Millisecond), tok, fail)
-		},
+		MaxSteps:       askMaxSteps,
+		WallTime:       120 * time.Second,
+		Roots:          askAgentRoot,
+		CollectPrompts: verbose, // attach system/user prompts + raw LLM when -v
+	}
+
+	// TTY default: progressive live view (docs/111). -v and non-TTY fall back
+	// to plain text writers so pipelines and full transcripts stay simple.
+	if !verbose && agentview.UseLive(os.Stderr) {
+		view := agentview.NewDefault()
+		defer view.Close()
+		opts.OnProgress = view.OnProgress
+		opts.OnStep = view.OnStep
+	} else {
+		opts.OnStep = func(s agent.Step) {
+			writeAgentStep(os.Stderr, s, verbose)
+		}
 	}
 
 	result, err := engine.AskAgent(ctx, question, opts)
@@ -195,6 +196,278 @@ func runAgent(ctx context.Context, engine *query.Engine, question string) error 
 		}
 	}
 	return nil
+}
+
+// writeAgentStep renders one ReAct turn for CLI observability (docs/111).
+// Default: one-line compact summary. Verbose or error steps: multi-line detail.
+func writeAgentStep(w io.Writer, s agent.Step, verbose bool) {
+	if verbose || stepNeedsExpand(s) {
+		writeAgentStepDetailed(w, s, verbose)
+		return
+	}
+	writeAgentStepCompact(w, s)
+}
+
+// stepNeedsExpand reports whether a non-verbose step should still show detail
+// (parse failures and tool/LLM errors) so problems are not hidden in a one-liner.
+func stepNeedsExpand(s agent.Step) bool {
+	if s.Thought == "parse_error" {
+		return true
+	}
+	if strings.HasPrefix(s.Observation, "ERROR:") {
+		return true
+	}
+	return false
+}
+
+// stepKind labels a step for detailed headers (stable vocabulary).
+func stepKind(s agent.Step) string {
+	switch {
+	case s.Final:
+		return "final_answer"
+	case s.Thought == "parse_error":
+		return "parse_error"
+	case s.Action == "" && strings.HasPrefix(s.Observation, "ERROR:"):
+		return "error"
+	default:
+		return "tool"
+	}
+}
+
+// compactKind is the middle label on a one-line timeline row (tool name when known).
+func compactKind(s agent.Step) string {
+	switch {
+	case s.Final:
+		return "final_answer"
+	case s.Thought == "parse_error":
+		return "parse_error"
+	case strings.HasPrefix(s.Observation, "ERROR:"):
+		return "error"
+	case s.Action != "":
+		return s.Action
+	default:
+		return "tool"
+	}
+}
+
+// stepStatusMark is the leading glyph for compact timeline rows.
+func stepStatusMark(s agent.Step) string {
+	if s.Thought == "parse_error" || strings.HasPrefix(s.Observation, "ERROR:") {
+		return "✗"
+	}
+	if s.Final {
+		return "→"
+	}
+	return "✓"
+}
+
+// writeAgentStepCompact prints a single skimmable line per successful step.
+// Example: ✓ 3 · wiki_search · "GC" · 120ms · 48B · 100→20 tok
+func writeAgentStepCompact(w io.Writer, s agent.Step) {
+	parts := []string{
+		fmt.Sprintf("%s %d", stepStatusMark(s), s.Index),
+		compactKind(s),
+	}
+	if detail := formatActionDetail(s.Action, s.Args); detail != "" {
+		parts = append(parts, truncateOneLine(detail, agentCompactDetailMax))
+	} else if s.Final && s.Thought != "" && s.Thought != "parse_error" {
+		parts = append(parts, truncateOneLine(s.Thought, agentCompactDetailMax))
+	}
+	parts = append(parts, s.Duration.Round(time.Millisecond).String())
+	if size := formatObsSize(s); size != "" {
+		parts = append(parts, size)
+	}
+	if tok := strings.TrimPrefix(formatStepTokens(s), ", "); tok != "" {
+		parts = append(parts, tok)
+	}
+	fmt.Fprintln(w, strings.Join(parts, " · "))
+}
+
+// formatObsSize is a short observation bulk note for compact lines (e.g. "1.2kB").
+func formatObsSize(s agent.Step) string {
+	n := s.ObsBytes
+	if n <= 0 {
+		n = len(s.Observation)
+	}
+	if n <= 0 {
+		return ""
+	}
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%dB", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1fkB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
+	}
+}
+
+// truncateOneLine collapses whitespace and caps length for compact display.
+// Path-like values keep the suffix (basename) so long absolute paths remain useful.
+func truncateOneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 1 {
+		return "…"
+	}
+	// Keep end for paths (same idea as agentview.shortenDetail).
+	if strings.Contains(s, "/") || strings.Contains(s, `\`) {
+		if !strings.HasPrefix(s, `"`) {
+			if len(s) > max-1 {
+				return "…" + s[len(s)-(max-1):]
+			}
+		}
+	}
+	return s[:max-1] + "…"
+}
+
+// writeAgentStepDetailed prints Thought → Action → Observation (and with
+// verbose: decide prompt + raw LLM response). Used for -v and auto-expanded errors.
+func writeAgentStepDetailed(w io.Writer, s agent.Step, verbose bool) {
+	tok := formatStepTokens(s)
+	fmt.Fprintf(w, "── Step %d · %s (%s%s) ──\n",
+		s.Index, stepKind(s), s.Duration.Round(time.Millisecond), tok)
+
+	// Verbose: show the decide-round prompt material first (what the model saw).
+	if verbose {
+		writeAgentPromptDetail(w, s)
+	}
+
+	// Thought (model reasoning)
+	if s.Thought != "" && s.Thought != "parse_error" {
+		fmt.Fprintf(w, "Thought:\n")
+		writeIndentedBlock(w, s.Thought, "  ")
+	} else if s.Thought == "parse_error" {
+		fmt.Fprintf(w, "Thought: (model returned unparseable JSON)\n")
+		if s.ParseDumpPath != "" {
+			fmt.Fprintf(w, "  dump: %s\n", s.ParseDumpPath)
+		}
+	}
+
+	if s.Final {
+		if s.FinalAnswer != "" {
+			preview := s.FinalAnswer
+			limit := agentObsPreviewDefault
+			if verbose {
+				limit = agentObsPreviewVerbose
+			}
+			previewNote := ""
+			if len(preview) > limit {
+				preview = preview[:limit]
+				previewNote = " (preview)"
+			}
+			fmt.Fprintf(w, "Final answer%s (%d chars):\n", previewNote, len(s.FinalAnswer))
+			writeIndentedBlock(w, preview, "  ")
+			if previewNote != "" {
+				fmt.Fprintf(w, "  …\n")
+			}
+		} else {
+			fmt.Fprintf(w, "Final answer ready.\n")
+		}
+		fmt.Fprintln(w)
+		return
+	}
+
+	// Action + args
+	if s.Action != "" {
+		fmt.Fprintf(w, "Action: %s\n", s.Action)
+		if verbose && len(s.Args) > 0 {
+			if argsJSON, err := json.MarshalIndent(s.Args, "  ", "  "); err == nil {
+				fmt.Fprintf(w, "  args: %s\n", string(argsJSON))
+			} else {
+				fmt.Fprintf(w, "  args: %v\n", s.Args)
+			}
+		}
+		if detail := formatActionDetail(s.Action, s.Args); detail != "" {
+			fmt.Fprintf(w, "  summary: %s\n", detail)
+		}
+	}
+
+	// Observation (tool result)
+	if s.Observation != "" {
+		limit := agentObsPreviewError
+		if verbose {
+			limit = agentObsPreviewVerbose
+		}
+		obs := s.Observation
+		shownTruncated := false
+		if len(obs) > limit {
+			obs = obs[:limit]
+			shownTruncated = true
+		}
+		sizeNote := ""
+		if s.ObsBytes > 0 {
+			sizeNote = fmt.Sprintf(" (%d bytes", s.ObsBytes)
+			if shownTruncated || len(s.Observation) < s.ObsBytes {
+				sizeNote += ", preview"
+			}
+			sizeNote += ")"
+		} else if shownTruncated {
+			sizeNote = " (preview)"
+		}
+		label := "Observation"
+		if strings.HasPrefix(s.Observation, "ERROR:") {
+			label = "Observation · ERROR"
+		}
+		fmt.Fprintf(w, "%s%s:\n", label, sizeNote)
+		writeIndentedBlock(w, obs, "  ")
+		if shownTruncated || (s.ObsBytes > 0 && len(s.Observation) < s.ObsBytes) {
+			fmt.Fprintf(w, "  …\n")
+		}
+	}
+
+	fmt.Fprintln(w)
+}
+
+// writeAgentPromptDetail prints decide-round prompts and raw LLM output (-v only).
+func writeAgentPromptDetail(w io.Writer, s agent.Step) {
+	if s.SystemPrompt == "" && s.UserPrompt == "" && s.LLMRaw == "" {
+		return
+	}
+	fmt.Fprintf(w, "Decide prompt:\n")
+	if s.SystemPrompt != "" {
+		fmt.Fprintf(w, "  [system] (%d chars)\n", len(s.SystemPrompt))
+		writeIndentedBlock(w, truncateForDisplay(s.SystemPrompt, agentPromptPreview), "    ")
+		if len(s.SystemPrompt) > agentPromptPreview {
+			fmt.Fprintf(w, "    …\n")
+		}
+	}
+	if s.UserPrompt != "" {
+		fmt.Fprintf(w, "  [user] (%d chars)\n", len(s.UserPrompt))
+		writeIndentedBlock(w, truncateForDisplay(s.UserPrompt, agentPromptPreview), "    ")
+		if len(s.UserPrompt) > agentPromptPreview {
+			fmt.Fprintf(w, "    …\n")
+		}
+	}
+	if s.LLMRaw != "" {
+		fmt.Fprintf(w, "LLM response (%d chars):\n", len(s.LLMRaw))
+		writeIndentedBlock(w, truncateForDisplay(s.LLMRaw, agentLLMRawPreview), "  ")
+		if len(s.LLMRaw) > agentLLMRawPreview {
+			fmt.Fprintf(w, "  …\n")
+		}
+	}
+}
+
+// writeIndentedBlock writes each line of text with a fixed prefix.
+func writeIndentedBlock(w io.Writer, text, prefix string) {
+	if text == "" {
+		return
+	}
+	// Avoid strings.Split allocating for trailing newline-only differences.
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for _, line := range lines {
+		fmt.Fprintf(w, "%s%s\n", prefix, line)
+	}
+}
+
+// truncateForDisplay cuts s to n runes-ish (bytes) with no ellipsis (caller adds it).
+func truncateForDisplay(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // runAskNonStream performs a blocking ask and prints the full answer at once.

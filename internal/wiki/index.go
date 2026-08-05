@@ -330,11 +330,17 @@ func (im *IndexManager) SearchRaw(query string, limit int) ([]SearchResult, erro
 		limit = 10
 	}
 
-	// Try AND semantics first, then OR fallback (same pattern as wiki FTS).
-	results, err := im.searchRawWithSnippets(query, limit)
+	// Always rewrite NL queries into safe FTS5 (CJK bigrams + explicit AND).
+	// Passing the raw user string can hit FTS5 grammar errors or miss CJK
+	// sub-phrases that only exist as indexed bigrams.
+	andQ := toFTS5AndQuery(query)
+	if andQ == "" {
+		andQ = sanitizeFTS5Query(query)
+	}
+	results, err := im.searchRawWithSnippets(andQ, limit)
 	if err != nil || len(results) == 0 {
 		orQ := toFTS5OrQuery(query)
-		if orQ != "" && orQ != query {
+		if orQ != "" && orQ != andQ {
 			orResults, orErr := im.searchRawWithSnippets(orQ, limit)
 			if orErr == nil && len(orResults) > 0 {
 				return orResults, nil
@@ -533,6 +539,10 @@ func (im *IndexManager) searchWithSnippets(query string, limit int) ([]SearchRes
 	return results, rows.Err()
 }
 
+// ToFTS5OrQuery is the exported form of toFTS5OrQuery for callers outside
+// package wiki (e.g. query.Find).
+func ToFTS5OrQuery(query string) string { return toFTS5OrQuery(query) }
+
 // toFTS5OrQuery transforms a natural-language query into an OR-connected
 // FTS5 query suitable for the OR-fallback search path.
 //
@@ -545,6 +555,10 @@ func (im *IndexManager) searchWithSnippets(query string, limit int) ([]SearchRes
 func toFTS5OrQuery(query string) string {
 	return expandQueryCJKBigrams(query)
 }
+
+// ToFTS5AndQuery is the exported form of toFTS5AndQuery for callers outside
+// package wiki (e.g. query.Find).
+func ToFTS5AndQuery(query string) string { return toFTS5AndQuery(query) }
 
 // splitForFTS5Query splits a query string into tokens mimicking FTS5's
 // unicode61 tokenizer behavior: it splits on whitespace, punctuation,
@@ -736,15 +750,44 @@ func extractCJKBigrams(text string) []string {
 	return bigrams
 }
 
+// fts5Quote wraps a token as an FTS5 phrase, escaping internal double quotes.
+// Always quote user/derived tokens so punctuation and CJK do not hit FTS5
+// operator grammar by accident.
+func fts5Quote(term string) string {
+	return `"` + strings.ReplaceAll(term, `"`, `""`) + `"`
+}
+
+// cjkBigramGroup returns an FTS5 subexpression for a pure-CJK word of length >= 2:
+// a single quoted bigram, or (bg1 OR bg2 OR …) for longer runs.
+func cjkBigramGroup(word string) string {
+	runes := []rune(word)
+	bgSeen := make(map[string]bool)
+	var bgParts []string
+	for j := 0; j < len(runes)-1; j++ {
+		bg := string(runes[j : j+2])
+		if !bgSeen[bg] {
+			bgSeen[bg] = true
+			bgParts = append(bgParts, fts5Quote(bg))
+		}
+	}
+	if len(bgParts) == 0 {
+		return fts5Quote(word)
+	}
+	if len(bgParts) == 1 {
+		return bgParts[0]
+	}
+	return "(" + strings.Join(bgParts, " OR ") + ")"
+}
+
 // expandQueryCJKBigrams expands a query string by replacing CJK terms with
 // their constituent overlapping bigrams, joined by OR. Non-CJK terms are
 // kept as-is. This mirrors the bigram enrichment done at indexing time.
 //
-// Example: "透明巨页 Go GC" → `"透明" OR "明巨" OR "巨页" OR "Go" OR "GC"`
+// Example: "透明巨页 Go GC" → `("透明" OR "明巨" OR "巨页") OR "Go" OR "GC"`
 func expandQueryCJKBigrams(query string) string {
 	words := splitForFTS5Query(query)
 	if len(words) == 0 {
-		return query
+		return sanitizeFTS5Query(query)
 	}
 
 	var parts []string
@@ -761,30 +804,15 @@ func expandQueryCJKBigrams(query string) string {
 		}
 
 		if allCJK && len(runes) >= 2 {
-			// Generate overlapping bigrams
-			bgSeen := make(map[string]bool)
-			var bgParts []string
-			for j := 0; j < len(runes)-1; j++ {
-				bg := string(runes[j : j+2])
-				if !bgSeen[bg] {
-					bgSeen[bg] = true
-					bgParts = append(bgParts, `"`+bg+`"`)
-				}
-			}
-			if len(bgParts) == 1 {
-				parts = append(parts, bgParts[0])
-			} else {
-				parts = append(parts, "("+strings.Join(bgParts, " OR ")+")")
-			}
+			parts = append(parts, cjkBigramGroup(word))
 		} else if len(runes) >= 2 {
-			// Non-CJK token: keep as-is, but only if >= 2 chars to avoid noise
-			parts = append(parts, `"`+word+`"`)
+			parts = append(parts, fts5Quote(word))
 		}
 		// Tokens shorter than 2 characters are silently dropped
 	}
 
 	if len(parts) == 0 {
-		return query
+		return sanitizeFTS5Query(query)
 	}
 	return strings.Join(parts, " OR ")
 }
@@ -792,7 +820,11 @@ func expandQueryCJKBigrams(query string) string {
 // toFTS5AndQuery builds an AND-oriented FTS5 query that expands pure CJK terms
 // into bigram OR-groups while preserving AND semantics between terms.
 //
-// Example: "透明巨页 Go GC" → `("透明" OR "明巨" OR "巨页") go gc`
+// Example: "透明巨页 Go GC" → `("透明" OR "明巨" OR "巨页") AND "Go" AND "GC"`
+//
+// Important: FTS5 allows implicit AND (space) only between bare terms/phrases.
+// After a parenthesized subexpression (our CJK bigram groups), space is a
+// syntax error — the operator must be explicit AND. Always join with " AND ".
 //
 // This ensures CJK sub-phrases can match (via bigrams) while non-CJK terms
 // still require exact matching. The result is a more precise AND query than
@@ -800,7 +832,7 @@ func expandQueryCJKBigrams(query string) string {
 func toFTS5AndQuery(query string) string {
 	words := splitForFTS5Query(query)
 	if len(words) == 0 {
-		return query
+		return sanitizeFTS5Query(query)
 	}
 
 	var parts []string
@@ -815,31 +847,46 @@ func toFTS5AndQuery(query string) string {
 		}
 
 		if allCJK && len(runes) >= 2 {
-			bgSeen := make(map[string]bool)
-			var bgParts []string
-			for j := 0; j < len(runes)-1; j++ {
-				bg := string(runes[j : j+2])
-				if !bgSeen[bg] {
-					bgSeen[bg] = true
-					bgParts = append(bgParts, `"`+bg+`"`)
-				}
-			}
-			if len(bgParts) == 1 {
-				parts = append(parts, bgParts[0])
-			} else {
-				parts = append(parts, "("+strings.Join(bgParts, " OR ")+")")
-			}
+			parts = append(parts, cjkBigramGroup(word))
 		} else if len(runes) >= 2 {
-			parts = append(parts, `"`+word+`"`)
+			parts = append(parts, fts5Quote(word))
 		}
 		// Drop very short tokens
 	}
 
 	if len(parts) == 0 {
-		return query
+		return sanitizeFTS5Query(query)
 	}
-	// Space-separated = AND semantics in FTS5
-	return strings.Join(parts, " ")
+	// Explicit AND — required when any part is a parenthesized bigram group.
+	return strings.Join(parts, " AND ")
+}
+
+// sanitizeFTS5Query quotes a free-form string as a single phrase when we could
+// not tokenize it into safe terms. Strips characters that break FTS5 MATCH.
+func sanitizeFTS5Query(query string) string {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return ""
+	}
+	// Drop FTS5 operator punctuation so a raw dump never becomes MATCH syntax.
+	var b strings.Builder
+	for _, r := range q {
+		switch r {
+		case '"', '*', '(', ')', ':', '^':
+			b.WriteRune(' ')
+		default:
+			if unicode.IsSpace(r) {
+				b.WriteRune(' ')
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	cleaned := strings.Join(strings.Fields(b.String()), " ")
+	if cleaned == "" {
+		return ""
+	}
+	return fts5Quote(cleaned)
 }
 
 // ReadIndexMd reads and parses the current index.md.
