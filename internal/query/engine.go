@@ -78,6 +78,20 @@ func (e *Engine) Tracer() *trace.Tracer {
 	return e.tracer
 }
 
+// wikiStatter is satisfied by *wiki.Manager (dashboard stats).
+type wikiStatter interface {
+	Stats() (*wiki.WikiStats, error)
+}
+
+// Stats returns a knowledge-base snapshot for the web home dashboard.
+func (e *Engine) Stats() (*wiki.WikiStats, error) {
+	s, ok := e.wiki.(wikiStatter)
+	if !ok {
+		return nil, fmt.Errorf("wiki stats unavailable")
+	}
+	return s.Stats()
+}
+
 // SaveAnswer saves a Q&A result as a wiki synthesis page.
 func (e *Engine) SaveAnswer(question, answer string, refs []wiki.Ref) error {
 	title, content := wiki.FormatSynthesisContent(question, answer, refs)

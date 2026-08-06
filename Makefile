@@ -1,18 +1,18 @@
-.PHONY: build test lint dev install clean
+.PHONY: build dev test lint install deps clean
 
-# Binary name
 BINARY := ruminate
 BUILD_DIR := build
-
-# Go build flags
 LDFLAGS := -s -w
 
-# Default target
-all: build
-
+# Default: build UI + binary
 build:
+	cd web && npm run build
 	@mkdir -p $(BUILD_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/ruminate
+
+# Build then serve (API + UI)
+dev: build
+	./$(BUILD_DIR)/$(BINARY) serve
 
 test:
 	go test -v -race -count=1 ./...
@@ -20,23 +20,12 @@ test:
 lint:
 	golangci-lint run ./...
 
-dev:
-	# Start backend (build and run)
-	@echo "Building backend..."
-	go run ./cmd/ruminate serve &
-	# Wait for backend to start
-	@sleep 1
-	# Start frontend dev server
-	@echo "Starting frontend dev server..."
-	cd web && npm run dev
-
-install:
+install: build
 	go install -ldflags "$(LDFLAGS)" ./cmd/ruminate
 
-clean:
-	rm -rf $(BUILD_DIR)
-
-# Run go mod tidy to ensure dependencies are in sync
 deps:
 	go mod tidy
 	cd web && npm install
+
+clean:
+	rm -rf $(BUILD_DIR)

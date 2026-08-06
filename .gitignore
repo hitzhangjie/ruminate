@@ -1,6 +1,11 @@
 # Build output
 build/
 
+# Vite UI bundle (embedded at compile time; placeholder index.html is kept in-tree
+# only when needed — generated assets/ should not be committed)
+internal/serve/static/dist/assets/
+internal/serve/static/dist/vite.svg
+
 # Test output
 *.test
 coverage.out
